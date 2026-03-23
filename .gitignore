@@ -1,0 +1,14 @@
+/src-tauri/target
+/src-tauri/gen
+/snapshots
+
+# Model weights are bundled at build time, not committed. See README.md.
+/models/*.onnx
+
+# Local tooling
+/.claude/
+CLAUDE.md
+
+# Screenshots may contain a real person.
+*.png
+!src-tauri/icons/*.png

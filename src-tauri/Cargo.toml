@@ -1,0 +1,32 @@
+[package]
+name = "deepscreen-viewer"
+version = "0.1.0"
+edition = "2021"
+description = "Test instrument for deepscreen-detect. Not the product."
+
+# This app depends on the detection crate. The dependency never points the
+# other way: `deepscreen-detect` has no idea this exists (MODELS.md §0).
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+deepscreen-detect = { path = "../../deepscreen-detect" }
+
+tauri = { version = "2", features = [] }
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+
+# Preview transport: a loopback MJPEG stream, so the browser decodes frames
+# and no pixels ever cross the Tauri IPC boundary (MODELS.md §12).
+tiny_http = "0.12"
+
+arc-swap = "1"
+image = "0.25"
+fast_image_resize = "5"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+[features]
+# Kept so `cargo tauri build` works unchanged; nothing custom here.
+default = []

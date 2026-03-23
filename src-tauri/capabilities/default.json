@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "default",
+  "description": "Core permissions for the viewer window. No plugins, no filesystem, no shell.",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}
