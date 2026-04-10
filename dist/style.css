@@ -1,0 +1,155 @@
+/* Test instrument styling: legible, dark, and out of the way.
+   No framework — the cheapest way not to have a render pathology is not to
+   have a renderer. */
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background: #0b0d10;
+  color: #e6e9ef;
+  font-family: system-ui, sans-serif;
+  overflow: hidden;
+}
+
+/* Plain positioned block, not a grid. The image centres itself via
+   object-fit, so grid alignment bought nothing and applies to
+   absolutely-positioned children in ways that are easy to get surprised by. */
+/* `position: fixed; inset: 0` sizes to the visual viewport directly. `100vw`
+   is not the same thing — it can exceed the visible client area, which pushed
+   the right-anchored flag panel off-screen and cropped the right edge of the
+   frame. An instrument must show the whole picture it is measuring. */
+#stage {
+  position: fixed;
+  inset: 0;
+  background: #000;
+}
+
+#stream,
+#overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+/* `contain` on the image and xMidYMid meet on the SVG produce the same
+   letterbox, which is what keeps the boxes aligned without any arithmetic. */
+#stream {
+  object-fit: contain;
+}
+
+#overlay {
+  pointer-events: none;
+}
+
+/* ---- HUD ---- */
+
+#hud {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 10;
+  padding: 10px 12px;
+  background: rgba(8, 10, 14, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 6px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre;
+  color: #cdd6e4;
+}
+
+#hud .warn {
+  color: #ffcc66;
+}
+
+/* ---- flag pills ---- */
+
+#flags {
+  position: absolute;
+  top: 12px;
+  right: 12px;
+  z-index: 10;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  align-items: stretch;
+  width: 140px;
+  /* Same panel treatment as the HUD: an instrument has to be readable over
+     whatever the camera happens to be pointing at. */
+  padding: 10px;
+  background: rgba(8, 10, 14, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 6px;
+}
+
+.flags-title {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #7c8797;
+  text-align: right;
+  margin-bottom: 2px;
+  line-height: 1.4;
+}
+
+.flags-title span {
+  color: #56606e;
+}
+
+.pill {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  letter-spacing: 0.04em;
+  text-align: center;
+  padding: 5px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  background: rgba(32, 38, 47, 0.85);
+  color: #8b95a5;
+  transition: none; /* a test instrument should show state, not animate to it */
+}
+
+.pill.on {
+  background: rgba(224, 76, 76, 0.9);
+  border-color: rgba(255, 140, 140, 0.6);
+  color: #fff;
+}
+
+#flag-degraded.on {
+  background: rgba(214, 158, 46, 0.92);
+  border-color: rgba(255, 208, 120, 0.6);
+}
+
+/* ---- fatal error ---- */
+
+/* The `hidden` attribute only works if no author rule sets `display`. This one
+   does (`display: grid`), and author styles beat the UA stylesheet — so
+   without this rule the 94%-opaque scrim below renders permanently, dimming
+   the video and the overlay while leaving the z-indexed HUD bright. Never
+   darken the thing being inspected: this is a measuring instrument. */
+#error[hidden] {
+  display: none;
+}
+
+#error {
+  position: absolute;
+  inset: 0;
+  z-index: 20;
+  display: grid;
+  place-items: center;
+  padding: 8vw;
+  background: rgba(6, 8, 11, 0.94);
+  color: #ff8f8f;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 15px;
+  line-height: 1.7;
+  white-space: pre-wrap;
+  text-align: center;
+}

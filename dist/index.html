@@ -1,0 +1,37 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>DeepScreen Viewer</title>
+    <link rel="stylesheet" href="style.css" />
+  </head>
+  <body>
+    <div id="stage">
+      <!-- The browser decodes and paints this. No JavaScript runs per frame. -->
+      <img id="stream" alt="" />
+
+      <!--
+        Overlay is SVG over the image, not pixels baked into the JPEG.
+        viewBox is set from the SOURCE resolution at runtime, so box
+        coordinates go straight in with no scale factor computed in JS.
+      -->
+      <svg id="overlay" preserveAspectRatio="xMidYMid meet"></svg>
+
+      <div id="hud">
+        <div id="hud-lines">connecting…</div>
+      </div>
+
+      <div id="flags">
+        <div class="flags-title">raw signals<br /><span>not violations</span></div>
+        <div class="pill" id="flag-noface">NO FACE</div>
+        <div class="pill" id="flag-multiface">MULTI FACE</div>
+        <div class="pill" id="flag-object">OBJECT</div>
+        <div class="pill" id="flag-degraded">DEGRADED</div>
+      </div>
+
+      <div id="error" hidden></div>
+    </div>
+
+    <script src="main.js"></script>
+  </body>
+</html>
