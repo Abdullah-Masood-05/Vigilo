@@ -787,6 +787,7 @@ dependencies = [
 [[package]]
 name = "deepscreen-detect"
 version = "0.1.0"
+source = "git+https://github.com/Abdullah-Masood-05/deepscreen-detect#1de81f26920c9a9e02083061f7e8d7c8c67d4280"
 dependencies = [
  "arc-swap",
  "clap",
