@@ -11,7 +11,17 @@ description = "Test instrument for deepscreen-detect. Not the product."
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-deepscreen-detect = { path = "../../deepscreen-detect" }
+# The detection library. Published separately so it stays usable without this
+# app — and so it can never accidentally acquire a Tauri dependency.
+#
+# For local development against a checkout sitting next to this repository,
+# override it without editing this file:
+#
+#   cargo add --path ../../deepscreen-detect deepscreen-detect
+#
+# or add a [patch."https://github.com/Abdullah-Masood-05/deepscreen-detect"]
+# section to .cargo/config.toml.
+deepscreen-detect = { git = "https://github.com/Abdullah-Masood-05/deepscreen-detect" }
 
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
