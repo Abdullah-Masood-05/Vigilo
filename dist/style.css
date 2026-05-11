@@ -127,6 +127,74 @@ body {
   border-color: rgba(255, 208, 120, 0.6);
 }
 
+/* ---- direction readout ---- */
+
+/* Visually separated from the pills above it, because it is a different kind
+   of claim: the pills are (eventually) violations, these are just labels. */
+#directions {
+  margin-top: 10px;
+  padding-top: 8px;
+  border-top: 1px solid rgba(255, 255, 255, 0.09);
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+}
+
+.directions-title {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #7c8797;
+  text-align: right;
+  margin-bottom: 6px;
+  line-height: 1.4;
+}
+
+/* The frame of reference is the one part of this panel that must never be
+   skimmed past — "GAZE RIGHT" is ambiguous without it. */
+#dir-frame {
+  color: #d6a94e;
+  text-transform: none;
+  letter-spacing: 0;
+}
+
+/* Fixed columns so the labels do not jitter sideways as the words change
+   length. Movement in a readout should mean the signal moved. */
+.dir-row {
+  display: grid;
+  grid-template-columns: 34px 1fr 1fr;
+  gap: 4px;
+  align-items: baseline;
+  line-height: 1.7;
+}
+
+.dir-row b {
+  color: #7c8797;
+  font-weight: 600;
+  font-size: 10px;
+  letter-spacing: 0.04em;
+}
+
+.dir-row i {
+  font-style: normal;
+  text-align: center;
+  color: #e6e9ef;
+  border-radius: 3px;
+  background: rgba(32, 38, 47, 0.7);
+}
+
+/* Centre is the resting state and should recede; an off-centre reading is the
+   thing worth noticing. */
+.dir-row i.centre {
+  color: #616b7a;
+  background: rgba(32, 38, 47, 0.4);
+}
+
+/* Absent, which is not the same as centred. */
+.dir-row i.none {
+  color: #3f4753;
+  background: transparent;
+}
+
 /* ---- fatal error ---- */
 
 /* The `hidden` attribute only works if no author rule sets `display`. This one

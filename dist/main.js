@@ -24,6 +24,13 @@ const el = {
   multiFace: document.getElementById("flag-multiface"),
   object: document.getElementById("flag-object"),
   degraded: document.getElementById("flag-degraded"),
+  dirFrame: document.getElementById("dir-frame"),
+  dirHeadH: document.getElementById("dir-head-h"),
+  dirHeadV: document.getElementById("dir-head-v"),
+  dirGazeH: document.getElementById("dir-gaze-h"),
+  dirGazeV: document.getElementById("dir-gaze-v"),
+  dirEyeH: document.getElementById("dir-eye-h"),
+  dirEyeV: document.getElementById("dir-eye-v"),
 };
 
 let sawDegradedEvent = false;
@@ -64,6 +71,37 @@ async function poll() {
   drawOverlay(snap);
   drawHud(snap);
   drawFlags(snap);
+  drawDirections(snap);
+}
+
+// Prints strings the library already decided. There is no angle here, no
+// threshold and no comparison against one — bucketing lives in Rust, in
+// `direction.rs`, with the hysteresis that stops these words flickering.
+//
+// The only test in this function is `=== "CENTER"`, and it chooses a colour.
+// Dimming the resting state is presentation; it decides nothing.
+function drawDirections(snap) {
+  const d = snap.signals?.debug_directions;
+
+  // The frame of reference arrives as prose ("subject POV") so this cannot
+  // drift from what the library actually meant. Mirroring is the viewer's own
+  // business, so it is reported here rather than by the library.
+  const mirrored = snap.preview_mirrored ? "mirrored" : "not mirrored";
+  el.dirFrame.textContent = d ? `${d.frame_of_reference} · ${mirrored}` : "—";
+
+  // `null` is "this signal did not run", which must not look like CENTER.
+  const put = (node, value) => {
+    node.textContent = value ?? "—";
+    node.classList.toggle("none", !value);
+    node.classList.toggle("centre", value === "CENTER");
+  };
+
+  put(el.dirHeadH, d?.head?.horizontal);
+  put(el.dirHeadV, d?.head?.vertical);
+  put(el.dirGazeH, d?.gaze?.horizontal);
+  put(el.dirGazeV, d?.gaze?.vertical);
+  put(el.dirEyeH, d?.eye?.horizontal);
+  put(el.dirEyeV, d?.eye?.vertical);
 }
 
 function drawOverlay(snap) {
@@ -234,6 +272,10 @@ function drawHud(snap) {
     // the frame and pushes right-anchored UI off-screen. An instrument should
     // report the geometry it is drawing into.
     `view ${window.innerWidth}x${window.innerHeight}  dpr ${window.devicePixelRatio}`,
+    // Alongside the other geometry, because that is what it is. A flipped
+    // preview and a backwards label look identical until one of them is
+    // written down.
+    `mirrored ${snap.preview_mirrored ? "yes" : "no"}`,
     snap.running ? "" : "— source ended —",
   ]
     .filter(Boolean)

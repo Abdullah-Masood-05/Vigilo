@@ -44,6 +44,24 @@ const PREVIEW_WIDTH: u32 = 640;
 /// test window.
 const JPEG_QUALITY: u8 = 70;
 
+/// Whether the preview is horizontally flipped before it reaches the screen.
+///
+/// **It is not**, and this constant is here so that claim is checkable in one
+/// place instead of inferred from the absence of code. Nothing in [`encode`]
+/// flips, the capture path passes no `hflip` to ffmpeg, and the stylesheet
+/// applies no `scaleX(-1)`. What the window shows is what the camera sent.
+///
+/// This matters far more than it looks. Direction labels describe the subject's
+/// own left and right; a mirrored preview would show them moving the opposite
+/// way, and "the label is backwards" and "the picture is flipped" are
+/// indistinguishable symptoms unless one of them is stated outright. So it is
+/// reported in the HUD.
+///
+/// Flipping the preview later means setting this to `true` **and** nothing
+/// else: the labels are about the person, not the picture, so they do not
+/// change.
+pub const MIRRORED: bool = false;
+
 /// A JPEG and the signals for **that** JPEG.
 ///
 /// Carrying both together is what bounds box/pixel skew at one preview frame,

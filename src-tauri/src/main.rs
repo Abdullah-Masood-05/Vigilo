@@ -61,6 +61,10 @@ struct SnapshotDto {
     source: String,
     degraded: Vec<String>,
     error: Option<String>,
+    /// Whether the picture on screen is flipped. Reported so that a direction
+    /// label disagreeing with the video is diagnosable rather than a guess —
+    /// see [`preview::MIRRORED`].
+    preview_mirrored: bool,
 }
 
 #[tauri::command]
@@ -74,6 +78,9 @@ fn snapshot(state: State<ViewerState>) -> SnapshotDto {
         return SnapshotDto {
             source: state.source.clone(),
             error: state.startup_error.clone(),
+            // Set explicitly rather than left to `Default`, which would happen
+            // to be right today only because `false` is both.
+            preview_mirrored: preview::MIRRORED,
             ..Default::default()
         };
     };
@@ -101,6 +108,7 @@ fn snapshot(state: State<ViewerState>) -> SnapshotDto {
         source: state.source.clone(),
         degraded: detector_state.degraded.iter().map(|d| format!("{d:?}")).collect(),
         error: detector.error().or_else(|| state.startup_error.clone()),
+        preview_mirrored: preview::MIRRORED,
     }
 }
 

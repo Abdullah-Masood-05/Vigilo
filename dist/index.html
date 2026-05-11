@@ -27,6 +27,21 @@
         <div class="pill" id="flag-multiface">MULTI FACE</div>
         <div class="pill" id="flag-object">OBJECT</div>
         <div class="pill" id="flag-degraded">DEGRADED</div>
+
+        <!--
+          Temporary validation aid, not fusion. Every string here is computed
+          in Rust and printed verbatim: no angle ever gets compared in
+          JavaScript. The header states whose left is "LEFT", because that is
+          not guessable from the words alone.
+        -->
+        <div id="directions">
+          <div class="directions-title">
+            directions<br /><span id="dir-frame">—</span>
+          </div>
+          <div class="dir-row"><b>HEAD</b><i id="dir-head-h">—</i><i id="dir-head-v">—</i></div>
+          <div class="dir-row"><b>GAZE</b><i id="dir-gaze-h">—</i><i id="dir-gaze-v">—</i></div>
+          <div class="dir-row"><b>EYE</b><i id="dir-eye-h">—</i><i id="dir-eye-v">—</i></div>
+        </div>
       </div>
 
       <div id="error" hidden></div>
