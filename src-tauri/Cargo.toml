@@ -14,14 +14,18 @@ tauri-build = { version = "2", features = [] }
 # The detection library. Published separately so it stays usable without this
 # app — and so it can never accidentally acquire a Tauri dependency.
 #
-# For local development against a checkout sitting next to this repository,
-# override it without editing this file:
+# By path, not by git revision. Pinning it to a commit hash meant every library
+# edit needed commit -> push -> re-pin before it could even be compiled here,
+# which is the wrong cost to pay several times an hour.
 #
-#   cargo add --path ../../deepscreen-detect deepscreen-detect
+# The trade: the two repositories must be cloned as siblings —
 #
-# or add a [patch."https://github.com/Abdullah-Masood-05/deepscreen-detect"]
-# section to .cargo/config.toml.
-deepscreen-detect = { git = "https://github.com/Abdullah-Masood-05/deepscreen-detect" }
+#   git clone .../deepscreen-detect
+#   git clone .../deepscreen-viewer
+#
+# — because this resolves to `../deepscreen-detect` relative to the repository
+# root. See the README.
+deepscreen-detect = { path = "../../deepscreen-detect" }
 
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }

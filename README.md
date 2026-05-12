@@ -89,6 +89,24 @@ three different values.
 
 ## Running it
 
+**Clone both repositories as siblings.** This app depends on the detection
+library by relative path, so the directory layout is part of the build:
+
+```
+some-directory/
+├── deepscreen-detect/
+└── deepscreen-viewer/     <- you are here
+```
+
+```bash
+git clone https://github.com/Abdullah-Masood-05/deepscreen-detect
+git clone https://github.com/Abdullah-Masood-05/deepscreen-viewer
+```
+
+A path dependency rather than a pinned revision is deliberate: the two are
+developed together, and pinning meant every library edit needed a commit and a
+push before it could be compiled here.
+
 ```bash
 # once — fetch the model weights (see "Models" below)
 cd src-tauri
