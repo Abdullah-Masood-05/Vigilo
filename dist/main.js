@@ -36,6 +36,17 @@ const el = {
 let sawDegradedEvent = false;
 let viewBox = "";
 
+// The object worker runs at 1 Hz against a 15 Hz face worker, and the library
+// now reports its results on the one frame they were computed for — never
+// carried forward, because "there was a phone 900 ms ago" is an inference and
+// inference belongs to fusion.
+//
+// For *display* that would mean boxes flashing for a single frame per second.
+// So the last real result is held here, in the front end, where it is clearly
+// a rendering choice and cannot be mistaken for a measurement. Nothing derived
+// from this is sent anywhere or used to decide anything.
+let lastObjects = { detections: [], seq: -1 };
+
 // Events are edge-triggered and low-rate — the opposite of the polled
 // snapshot. Silent until fusion lands at step 8.
 listen("detection:event", (event) => {
@@ -66,6 +77,12 @@ async function poll() {
     el.error.textContent = snap.error;
   } else {
     el.error.hidden = true;
+  }
+
+  // Refresh the held object result before anything draws, so the overlay, the
+  // pill and the HUD all describe the same thing.
+  if (snap.signals?.produced_by?.objects === "produced") {
+    lastObjects = { detections: snap.signals.objects || [], seq: snap.seq };
   }
 
   drawOverlay(snap);
@@ -157,8 +174,8 @@ function drawOverlay(snap) {
     drawGazeRay(gaze, s.faces[0]);
   }
 
-  // Render path is here and ready; nothing produces objects until step 7.
-  for (const obj of s.objects || []) {
+  // Held result, not this frame's — see `lastObjects`.
+  for (const obj of lastObjects.detections) {
     el.overlay.appendChild(rect(obj.bbox, "#ef4444"));
     el.overlay.appendChild(
       label(
@@ -258,7 +275,9 @@ function drawHud(snap) {
   const st = snap.stats || {};
   const ms = (us) => (us / 1000).toFixed(1);
   const faces = (snap.signals?.faces || []).length;
-  const objects = (snap.signals?.objects || []).length;
+  // Held count, matching the boxes and the pill. Its freshness is the
+  // `objects:` entry on the slots line below.
+  const objects = lastObjects.detections.length;
 
   el.hud.textContent = [
     `${snap.source}`,
@@ -268,6 +287,7 @@ function drawHud(snap) {
     `faces ${faces}   objects ${objects}   seq ${snap.seq}`,
     poseLine(snap.signals?.head_pose),
     gazeLine(snap.signals?.gaze),
+    slotLine(snap.signals?.produced_by),
     // Permanent, not a probe: a viewport wider than the window silently crops
     // the frame and pushes right-anchored UI off-screen. An instrument should
     // report the geometry it is drawing into.
@@ -297,6 +317,22 @@ eye     yaw ${f(deg(gaze.eye_yaw_rad))}  pitch ${f(deg(gaze.eye_pitch_rad))}`
   );
 }
 
+// What each model slot did on THIS frame. The states come from the library
+// verbatim; this only lays them out.
+//
+// Worth having on screen permanently: "gaze absent" and "gaze centred" look
+// identical in the angle readout above, and for a proctoring system reading
+// the first as the second is a false negative — the failure mode that matters
+// most. When gaze is gated, the reason is appended.
+function slotLine(coverage) {
+  if (!coverage) return "slots   —";
+  const slots = ["face", "pose", "gaze", "objects"]
+    .map((k) => `${k}:${coverage[k] ?? "?"}`)
+    .join(" ");
+  const why = coverage.gaze_gate ? `  (${coverage.gaze_gate})` : "";
+  return `slots   ${slots}${why}`;
+}
+
 function poseLine(pose) {
   if (!pose) return "pose    —";
   const f = (v) => (v >= 0 ? "+" : "") + v.toFixed(1);
@@ -312,7 +348,9 @@ function fmt(v) {
 // truth. These pills get replaced by Event-driven ones at step 8.
 function drawFlags(snap) {
   const faces = (snap.signals?.faces || []).length;
-  const objects = (snap.signals?.objects || []).length;
+  // Held, for the same reason the boxes are — a pill that blinks once a second
+  // is unreadable. The state that produced it is on the HUD's `slots` line.
+  const objects = lastObjects.detections.length;
   const degraded = sawDegradedEvent || (snap.degraded || []).length > 0;
 
   el.noFace.classList.toggle("on", snap.seq > 0 && faces === 0);
