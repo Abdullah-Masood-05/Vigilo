@@ -10,19 +10,19 @@ The desktop application for exam proctoring: opens, turns the camera on, and
 shows the live feed with face boxes, a head-pose gizmo, a gaze ray and a
 signals HUD.
 
-All of the detection lives in
-**[deepscreen-detect](https://github.com/Abdullah-Masood-05/deepscreen-detect)**,
-which this app depends on as a path dependency. That split is deliberate and
-strictly enforced:
+One project. The detection code — models, threading, decisions — lives in
+`src-tauri/src/lib.rs` and the modules beside it, and knows nothing about
+`tauri`: no window, no IPC, no webview import anywhere in it. `tauri::` is used
+only in `main.rs` and its two `#[tauri::command]` handlers. That boundary used
+to be enforced by a second crate (`deepscreen-detect`, now archived); it is
+enforced by module discipline instead, and `cargo test` still runs the
+detection code with no window and no camera to prove it.
 
-- `deepscreen-detect` — models, threading, decisions. Never gains a Tauri
-  dependency, so it stays testable headless and in CI.
-- `deepscreen-viewer` (this repo) — window, model bundling, rendering. Thin
-  Rust glue, thin JavaScript.
-
-The library does not know this application exists. If you want the detection
-engine on its own, or want to run it against recorded video from a terminal,
-go to that repository instead.
+The lib still has its own front door for exactly that: a `detect-cli` binary
+that runs the models from a terminal, against a webcam or a recorded clip, with
+no app and no window. It is what caught the INT8 slowdown, three wrong tensor
+shapes, and a latency figure that turned out to be measured with no face in
+frame — bugs a GUI would have hidden behind "looks fine."
 
 ## Screenshot
 
@@ -89,23 +89,11 @@ three different values.
 
 ## Running it
 
-**Clone both repositories as siblings.** This app depends on the detection
-library by relative path, so the directory layout is part of the build:
-
-```
-some-directory/
-├── deepscreen-detect/
-└── deepscreen-viewer/     <- you are here
-```
+Clone this one repository. Nothing else is required to build it:
 
 ```bash
-git clone https://github.com/Abdullah-Masood-05/deepscreen-detect
 git clone https://github.com/Abdullah-Masood-05/deepscreen-viewer
 ```
-
-A path dependency rather than a pinned revision is deliberate: the two are
-developed together, and pinning meant every library edit needed a commit and a
-push before it could be compiled here.
 
 ```bash
 # once — fetch the model weights (see "Models" below)
@@ -113,6 +101,10 @@ cd src-tauri
 cargo run --release                                    # camera:0
 cargo run --release -- --source file:../clip.mp4       # a recorded clip
 cargo run --release -- --source camera:1 --config dev.toml
+
+# the detection code from a terminal, no window, no camera required for most of it
+cargo run --release --bin detect-cli -- devices
+cargo run --release --bin detect-cli -- inspect ../models/*.onnx
 ```
 
 `cargo tauri dev` also works if you have the Tauri CLI, but it is not required.

@@ -26,8 +26,8 @@ use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use arc_swap::ArcSwap;
-use deepscreen_detect::types::Signals;
-use deepscreen_detect::Detector;
+use crate::types::Signals;
+use crate::Detector;
 use fast_image_resize::images::{Image, ImageRef};
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 
@@ -136,7 +136,7 @@ pub fn preview_loop(detector: Arc<Detector>, slot: PreviewSlot, stats: Arc<Previ
 }
 
 fn encode(
-    detected: &deepscreen_detect::Detected,
+    detected: &crate::Detected,
     resizer: &mut Resizer,
     scaled: &mut Option<Image<'static>>,
 ) -> Result<PreviewItem, String> {

@@ -1,0 +1,8 @@
+# Face fixtures for the model-convention tests.
+#
+# Not committed: these are pictures of a real person. Regenerate with
+#
+#   detect-cli live --source camera:0 --max-frames 60 --save-every 5 \n#     --save-dir samples/faces
+#
+# The convention tests skip when this directory is empty and fail loudly if it
+# holds frames with no detectable face.

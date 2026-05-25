@@ -1,10 +1,9 @@
-//! DeepScreen Viewer — a test instrument for `deepscreen-detect`.
+//! DeepScreen Viewer — the exam proctoring desktop app. This is the Tauri
+//! entry point: window setup, the two `#[tauri::command]`s, and nothing else.
+//! The detection code this app is built on lives in the crate root
+//! (`src/lib.rs`) and knows nothing about `tauri`.
 //!
-//! **This is not the product.** It exists to put eyes on what the detection
-//! crate produces: live frames, boxes where the models say faces are, and the
-//! throughput numbers that say whether the pipeline is healthy.
-//!
-//! Three rules it does not break:
+//! Three rules this layer does not break:
 //!
 //! 1. **No detection or decision logic lives here.** It renders what `Signals`
 //!    contains and nothing more. No thresholds, no hold timers, no hysteresis.
@@ -19,19 +18,16 @@
 // Release builds should not pop a console window behind the app.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-mod preview;
-
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use deepscreen_detect::config::Config;
-use deepscreen_detect::types::{PipelineStats, Signals};
-use deepscreen_detect::{Detector, SourceSpec};
+use deepscreen_viewer::config::Config;
+use deepscreen_viewer::preview::{self, PreviewSlot, PreviewStats};
+use deepscreen_viewer::types::{PipelineStats, Signals};
+use deepscreen_viewer::{Detector, SourceSpec};
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
-
-use preview::{PreviewSlot, PreviewStats};
 
 struct ViewerState {
     detector: Option<Arc<Detector>>,
@@ -202,9 +198,6 @@ fn resolve_model_dir(handle: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     candidates.push(std::path::PathBuf::from("models"));
     candidates.push(std::path::PathBuf::from("../models"));
     candidates.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../models"));
-    candidates.push(
-        std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../deepscreen-detect/models"),
-    );
 
     candidates.into_iter().find(|p| p.join("face_detection_yunet_2023mar.onnx").exists())
 }
@@ -212,7 +205,7 @@ fn resolve_model_dir(handle: &tauri::AppHandle) -> Option<std::path::PathBuf> {
 fn start_detector(
     args: &Args,
     model_dir: Option<&std::path::Path>,
-) -> Result<Detector, deepscreen_detect::DetectError> {
+) -> Result<Detector, deepscreen_viewer::DetectError> {
     let mut config = match &args.config {
         Some(path) => Config::load(path)?,
         None => Config::default(),
@@ -223,7 +216,7 @@ fn start_detector(
     match model_dir {
         Some(dir) => config.models.fill_missing_from_dir(dir),
         None => {
-            return Err(deepscreen_detect::DetectError::Config(
+            return Err(deepscreen_viewer::DetectError::Config(
                 "no model directory found — the app could not locate its bundled models".into(),
             ))
         }
@@ -238,7 +231,7 @@ fn start_detector(
 }
 
 /// Turn a `DetectError` into something a person can act on.
-fn explain(e: &deepscreen_detect::DetectError) -> String {
+fn explain(e: &deepscreen_viewer::DetectError) -> String {
     let base = e.to_string();
     if base.contains("Could not run graph") || base.contains("already in use") {
         format!(

@@ -2,44 +2,52 @@
 name = "deepscreen-viewer"
 version = "0.1.0"
 edition = "2021"
-description = "Test instrument for deepscreen-detect. Not the product."
+description = "Exam proctoring desktop app: camera frames in, proctoring signals out, one project."
 
-# This app depends on the detection crate. The dependency never points the
-# other way: `deepscreen-detect` has no idea this exists (MODELS.md §0).
+# Formerly two repositories: a headless `deepscreen-detect` library and this
+# app, connected by a path dependency. Consolidated so a clone of this one
+# folder is the whole product — see src/lib.rs for why, and what that traded
+# away. `tauri` is now a crate-level dependency, but the constraint it used to
+# enforce ("no tauri in the detection code") still holds: `tauri::` is used
+# only in main.rs and its command handlers, never inside the lib modules.
+
+[lib]
+name = "deepscreen_viewer"
+path = "src/lib.rs"
+
+[[bin]]
+name = "detect-cli"
+path = "src/bin/detect-cli.rs"
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
 
 [dependencies]
-# The detection library. Published separately so it stays usable without this
-# app — and so it can never accidentally acquire a Tauri dependency.
-#
-# By path, not by git revision. Pinning it to a commit hash meant every library
-# edit needed commit -> push -> re-pin before it could even be compiled here,
-# which is the wrong cost to pay several times an hour.
-#
-# The trade: the two repositories must be cloned as siblings —
-#
-#   git clone .../deepscreen-detect
-#   git clone .../deepscreen-viewer
-#
-# — because this resolves to `../deepscreen-detect` relative to the repository
-# root. See the README.
-deepscreen-detect = { path = "../../deepscreen-detect" }
-
 tauri = { version = "2", features = [] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+toml = "0.8"
+thiserror = "2"
+clap = { version = "4", features = ["derive"] }
 
 # Preview transport: a loopback MJPEG stream, so the browser decodes frames
 # and no pixels ever cross the Tauri IPC boundary (MODELS.md §12).
 tiny_http = "0.12"
 
 arc-swap = "1"
+crossbeam-channel = "0.5"
 image = "0.25"
 fast_image_resize = "5"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Inference. Pinned to one version so the app and detect-cli cannot disagree
+# about the ONNX Runtime binary. DirectML is deliberately NOT enabled yet.
+ort = { version = "2.0.0-rc.12", features = ["ndarray"] }
+ndarray = "0.17"
+
+[dev-dependencies]
+tempfile = "3"
 
 [features]
 # Kept so `cargo tauri build` works unchanged; nothing custom here.

@@ -1,0 +1,1223 @@
+# rust_context.md — what has been built, and what was learned building it
+
+> Companion to `CONTEXT.md` (the old JS/WASM module — history and mistakes) and
+> `MODELS.md` (the spec — the plan). **This file is the record of what actually
+> happened**, including the places where reality contradicted the plan.
+>
+> Everything below is measured on the development machine unless marked
+> otherwise. Where a number came from a vendor claim or an estimate, it says so.
+>
+> Development machine: **Intel i7-11850H** (Tiger Lake, 8 physical / 16 logical
+> cores, has AVX-512 VNNI), Windows 11 IoT Enterprise LTSC 2024, Rust 1.97.1,
+> ffmpeg 8.1.2, integrated webcam ("Integrated Webcam", 1280×720 MJPEG @ 30).
+
+---
+
+## 0. Where things live
+
+```
+Update_FYP/
+├── CONTEXT.md                  the old JS/WASM module (reference only)
+├── MODELS.md                   the spec being built to
+├── rust_context.md             ← this file
+├── DeepScreen-DesktopApp/      the existing Tauri app — NOT MODIFIED
+├── deepscreen-detect/          the detection crate — no UI, no Tauri
+└── deepscreen-viewer/          the product: the detection module as a Tauri app
+```
+
+**The existing app has not been touched.** Not one file. `git status` inside
+`DeepScreen-DesktopApp/` shows exactly what it showed before this work started.
+The only interaction has been *reading* it for reference and *copying*
+`w600k_mbf.onnx` out of its resources folder.
+
+`deepscreen-detect` deliberately sits outside that repo and has **no `tauri`
+dependency**, and never will (MODELS.md §0) — the production Tauri adapter,
+written at step 11, depends on this crate, never the reverse.
+
+`deepscreen-viewer` is a *second*, separate Tauri app that depends on
+`deepscreen-detect` by path. It began as a test instrument and **is now the
+deliverable** — the cheating-detection module itself, shipped standalone.
+Integration into `DeepScreen-DesktopApp` is explicitly not this project's job.
+See §9 for its architecture and §16 for the change of role.
+
+---
+
+## 1. Build order status — MODELS.md §11
+
+| Step | What | State |
+|---|---|---|
+| 1 | Crate skeleton, types, config, `detect-cli`, file/dir replay | **done** |
+| 2 | Camera capture behind `FrameSource` | **harness path done** (ffmpeg/DirectShow); `crabcamera` still to do |
+| 3 | YuNet face detection + baseline bench | **done** — 8.4 ms p50 end-to-end |
+| 4 | Threading skeleton, `ArcSwap` frame bus, `Detector` | **done** |
+| 5 | DirectML | not started |
+| 6 | Pose + gaze | **done** — wired and decoded; gizmo + gaze ray in the app |
+| 7 | Objects on their own worker at 1 Hz | **done** — YOLOX-Nano, Apache 2.0; see §17 |
+| 8 | Fusion + record/replay tuning | not started |
+| 9 | ArcFace identity at 0.2 Hz | model installed, **not wired** |
+| 10 | Quantization | INT8 investigated — see §8 |
+| 11 | Adapter into `DeepScreen-DesktopApp` | **out of scope** — the viewer is the product now (§16) |
+
+`deepscreen-detect`: 5758 lines of Rust across 20 files, **60 tests**, all
+passing. `deepscreen-viewer`: 542 lines of Rust plus a 474-line vanilla
+HTML/CSS/JS frontend and no build step. `cargo clippy --all-targets` is silent
+in both crates.
+
+---
+
+## 2. What exists
+
+```
+deepscreen-detect/
+├── models/                     6 .onnx files, ~33 MB, all five slots filled
+├── samples/                    _smoke_testsrc.mp4 (generated ffmpeg pattern)
+├── src/
+│   ├── lib.rs           56     public re-exports + build-status table
+│   ├── types.rs        373     Frame, Signals, Violation, Event — the seam
+│   ├── config.rs       484     every tunable number, and validation
+│   ├── error.rs         68     DetectError + degrade-never-die policy
+│   ├── report.rs       210     SessionReport, per-signal liveness, percentiles
+│   ├── capture/
+│   │   ├── mod.rs      139     FrameSource trait, SourceSpec parsing
+│   │   ├── ffmpeg.rs   212     shared raw-rgb24 subprocess pipe
+│   │   ├── camera.rs   398     device enumeration, format probing, capture
+│   │   └── replay.rs   338     video file + image directory sources
+│   ├── models/
+│   │   ├── mod.rs      259     session building, inspection, synthetic bench
+│   │   └── face.rs     391     YuNet: letterbox, anchor decode, NMS
+│   ├── pipeline/
+│   │   ├── mod.rs      380     Detector, DetectorBuilder, Detected, Shared state
+│   │   ├── frame_bus.rs 158    latest-frame ArcSwap slot
+│   │   └── workers.rs  164     capture_loop, detect_loop
+│   └── bin/detect-cli.rs  745  the harness
+└── tests/fusion_replay.rs 139  replay regression scaffold
+
+deepscreen-viewer/
+├── src-tauri/
+│   ├── Cargo.toml               depends on ../../deepscreen-detect by path
+│   ├── tauri.conf.json          frontendDist -> ../dist, no dev server config
+│   └── src/
+│       ├── main.rs      255     commands, wiring, arg parsing, error framing
+│       └── preview.rs   264     downscale + JPEG encode + loopback MJPEG server
+└── dist/                        static frontend, no build step
+    ├── index.html        37
+    ├── style.css        142
+    └── main.js          187
+```
+
+`deepscreen-detect` dependencies: `serde`, `serde_json`, `toml`, `thiserror`,
+`arc-swap`, `crossbeam-channel`, `clap`, `image`, `ort 2.0.0-rc.12`, `ndarray`,
+`fast_image_resize`, `tracing`, `tracing-subscriber`. Dev: `tempfile`.
+
+`ort` is pinned to the same `2.0.0-rc.12` the app already ships, so the two
+cannot disagree about the ONNX Runtime binary.
+
+`deepscreen-viewer` adds on top: `tauri`, `tiny_http` (the MJPEG server),
+`arc-swap`, `image`, `fast_image_resize`, `tracing`. Nothing else — no HTTP
+framework, no async runtime, no bundler.
+
+---
+
+## 3. The seam that everything rests on
+
+`Signals` (stateless, per-frame, produced by models) is kept strictly separate
+from `Violation` (stateful, temporal, produced by fusion). `Signals` derives
+`Serialize + Deserialize`, so a session can be recorded once and replayed
+through fusion thousands of times with **zero inference**.
+
+One addition beyond the spec: **`SignalCoverage`**, a per-frame record of which
+model slots actually ran. Without it, `objects: []` is ambiguous between "the
+detector looked and saw nothing" and "the detector was never running" — and
+MODELS.md §8 makes that distinction a correctness requirement for the product,
+not just for logging. This is exactly the ambiguity behind §10's
+object-detection gap: `objects` being empty today means "never running", not
+"nothing seen", and `SignalCoverage` is what lets that be stated precisely
+instead of guessed.
+
+> **⚠ This section claimed "it is now impossible to serialise a `Signals` that
+> hides the difference." That was false for about as long as it was written.**
+>
+> `SignalCoverage` was five booleans, and two of them lied:
+>
+> - `objects` was fed from a sticky global `AtomicBool` meaning *has ever run*.
+>   After the object worker's first result every later frame claimed coverage,
+>   including the fourteen in fifteen it never touched. An empty list read as
+>   evidence of absence on frames where nothing had looked — the precise
+>   ambiguity the field exists to remove.
+> - `gaze` was `true` whenever a gaze value came back, but the model returned a
+>   **held previous value** when its reliability gate fired. A stale
+>   measurement was indistinguishable from a fresh one.
+>
+> Fixed by making the record per-frame and per-slot: five `SlotState`s
+> (`produced` / `skipped_gated` / `skipped_cadence` / `failed` /
+> `not_configured`), with the gate reason carried alongside. Gaze returns no
+> value at all when gated, and object results are attached to exactly one frame
+> and then consumed rather than carried forward. Format version bumped to 2,
+> because a v1 recording's `true` cannot be mapped onto `Produced` without
+> importing the same ambiguity.
+>
+> The lesson is not about the booleans. A claim of impossibility written in the
+> same commit as the mechanism it describes is an assertion, not a test — and
+> this file is the place that is supposed to notice.
+
+The other API decision from §3 is already load-bearing, twice over now: there
+is **no way to push continuous values**. `events()` is edge-triggered;
+`snapshot()` is polled. The old module's frame-rate React re-render bug is
+unrepresentable here because no API expresses it — and `deepscreen-viewer`
+(§9) is the second, independent proof of that, not just the crate's own tests.
+
+---
+
+## 4. Capture — what the camera actually does
+
+Live capture currently runs the camera through **ffmpeg's DirectShow input**,
+reading raw rgb24 off a pipe, reusing the same machinery as video-file replay.
+
+This is the *harness* path, not the product. It exists because it bought a real
+measurement on day one with no new dependency and no `nokhwa` build fight. It
+is not what ships: an exam client that spawns ffmpeg has no frame-level control,
+an extra process, an extra copy per frame, and a hard dependency on an external
+binary. Step 2 proper replaces it with `crabcamera`. Keep this source anyway —
+it is a useful reference to benchmark the real path against.
+
+### Measured
+
+```
+300 frames, camera:0 at 1280x720 MJPEG
+mean 30.05 fps          inter-frame p50 31.23 ms   p95 53.44 ms   max 186.03 ms
+79.2 MB/s decoded
+```
+
+Capture is not going to be the bottleneck.
+
+### The MJPEG finding
+
+`detect-cli devices --formats` on the built-in webcam:
+
+```
+mjpeg      1280x720 @ 30 fps        <- what we use
+mjpeg      640x480  @ 30 fps
+yuyv422    1280x720 @ 10 fps        <- raw 720p is capped at a THIRD the rate
+yuyv422    640x480  @ 30 fps
+```
+
+Raw YUYV at 1280×720×30 would be ~55 MB/s over USB, so the camera refuses and
+offers 10 fps instead. This is exactly the bandwidth ceiling MODELS.md §12
+predicts, now confirmed on real hardware, and it is why `capture.prefer_mjpeg`
+defaults to true.
+
+### Two things that cost time
+
+**The camera was held by another process.** Windows lets exactly one process
+own a webcam. OBS Studio was running with camera consent, and ffmpeg failed
+with *"Could not run graph (sometimes caused by a device already in use by
+other application)"*. Worth knowing before blaming the code — and it recurred
+while testing the viewer, so `deepscreen-viewer` now detects this failure
+string specifically and prints a plain-language explanation instead of the raw
+DirectShow error (§9).
+
+**A real bug, found because of that failure.** The first failure reported an
+*empty* reason. The stderr drain thread was being read before it had written
+anything — the code read the collected message, then reaped the process. Fixed
+by reversing the order: `wait()` the child, `join()` the drain, *then* read.
+The diagnosis is the whole value of an error in this layer, so losing it was
+worse than the original failure.
+
+---
+
+## 5. Models — what is installed, and what they actually look like
+
+All five slots from MODELS.md §5.0 are present, ~33 MB total.
+
+| Slot | File | Real input | Real output | MB | Licence |
+|---|---|---|---|---|---|
+| Face | `face_detection_yunet_2023mar.onnx` | `1x3x640x640` | 12 tensors, strides 8/16/32 | 0.2 | MIT |
+| Face INT8 | `face_detection_yunet_2023mar_int8.onnx` | `1x3x640x640` | same | 0.1 | MIT |
+| Head pose | `headpose_mobilenetv3_small.onnx` | `1x3x224x224` | `rotation_matrix [1,3,3]` | 5.8 | MIT |
+| Gaze | `mobileone_s0_gaze.onnx` | `1x3x448x448` | `yaw[1,90]`, `pitch[1,90]` | 4.7 | MIT |
+| Objects | `yolox_nano.onnx` | `1x3x416x416` | `output [1,3549,85]` | 3.5 | Apache 2.0 |
+| Objects (rejected) | `yolo26n.onnx` | `1x3x640x640` | `output0 [1,300,6]` | 9.5 | **AGPL-3.0** |
+| Identity | `w600k_mbf.onnx` | `[?,3,112,112]` | `516 [1,512]` | 13.0 | — |
+
+**Corrected.** This table listed `yolo26n.onnx` as *the* object slot long after
+§17 replaced it with YOLOX-Nano on licence grounds. `ModelPaths::CONVENTIONAL`
+has mapped the slot to `yolox_nano.onnx` since then, and the runtime log
+confirms it: `object model ready model=models\yolox_nano.onnx`. `yolo26n.onnx`
+stays on disk as benchmark evidence and is excluded from the app bundle —
+`deepscreen-viewer/models/` does not contain it.
+
+Sources: OpenCV Zoo (YuNet), `yakhyo/head-pose-estimation` and
+`yakhyo/gaze-estimation` GitHub releases, `ultralytics/assets` release `v8.4.0`,
+and the app's own resources folder (ArcFace, copied out).
+
+**`yolo26n.onnx` ships pre-exported.** No Python, no torch, no export step —
+which was the reason it had initially been deferred. That assumption was wrong
+and cost a round trip. Having the file is not the same as having it wired in —
+see §10.
+
+### `detect-cli inspect` earned its keep immediately
+
+A command that reports a model's real tensor interface was written *before* any
+pre- or post-processing, on the principle that a published shape and an exported
+shape are not reliably the same thing. It caught three discrepancies in
+MODELS.md §5.0 straight away:
+
+1. **YuNet's input is 640×640, not 320×320**, and the head emits twelve
+   separate tensors with no NMS in the graph.
+2. **The head-pose model outputs a 3×3 rotation matrix, not Euler angles**, at
+   224×224 rather than 60×60. (It is `yakhyo/head-pose-estimation`, MIT —
+   `head-pose-estimation-adas-0001` is published only as OpenVINO IR, and the
+   PINTO mirror is dead.) Postprocessing must convert the matrix to yaw/pitch/roll.
+3. **MobileGaze is 4.97 MB, not ~8 MB**, takes 448×448, and emits two 90-bin
+   *classification* heads rather than regressed angles — decode is softmax then
+   expectation over bin centres, the L2CS-Net scheme it inherits.
+
+Also worth noting for step 5: **ArcFace has a dynamic batch axis**
+(`[?, 3, 112, 112]`). DirectML wants fully static shapes at session creation, so
+that axis will need pinning.
+
+### Measured latency — CPU EP, 50 iters after 5 warm-up
+
+Synthetic zero-tensor forward passes: the graph, not the task. A floor, not a
+budget. **This is timing only** — it proves a model loads and runs at a given
+speed, not that its output has been correctly decoded. Only YuNet has cleared
+that second bar (§7). The other four, including YOLO26n, have not.
+
+| model | p50 ms | p95 ms |
+|---|---|---|
+| yunet fp32 | 4.49 | 5.58 |
+| **yunet int8** | **47.96** | **51.03** |
+| headpose mobilenetv3-small | 1.60 | 2.11 |
+| mobilegaze mobileone-s0 | 9.46 | 11.23 |
+| arcface w600k_mbf | 5.45 | 7.35 |
+| yolo26n | 32.24 | 35.49 |
+
+**The whole stack fits comfortably.** Face + pose + gaze is 15.6 ms against a
+66.7 ms budget at 15 Hz — about 23%. YOLO26n at 32 ms once per second and
+ArcFace at 5.5 ms every five seconds are rounding errors on top. Roughly **27%
+of one core** for everything, before any GPU is involved. DirectML at step 5 is
+an optimisation, not a rescue.
+
+---
+
+## 6. Face detection — the one model that actually runs
+
+`src/models/face.rs`. Letterbox to the fixed 640×640 input, run, decode three
+stride grids, NMS, map coordinates back to source pixels.
+
+Details that matter and are easy to get silently wrong:
+
+- **BGR, not RGB.** YuNet was trained through OpenCV, whose `blobFromImage`
+  hands over BGR with no scaling and no mean subtraction. Frames here are RGB,
+  so the channel planes are filled in reverse. Getting this wrong *degrades*
+  detection rather than breaking it — the kind of bug that survives a smoke
+  test — so it is a named constant with a comment.
+- **Top-left letterbox, not centred.** Undoing it is then a single divide by
+  the scale factor with no offset term. A centred letterbox looks tidier and
+  buys nothing but two more terms to get wrong.
+- **Score is the geometric mean** of the classification and objectness heads,
+  matching OpenCV's own postprocess.
+- **Preallocated input tensor and resize target**, reused across frames, with
+  an explicit tight loop for the NHWC→NCHW conversion rather than chained
+  iterator `collect()`s (MODELS.md §6 rule 4).
+
+### Validated
+
+Against a known single-face image: **exactly 1 detection**, bounding box on the
+face, all five keypoints (both eyes, nose, both mouth corners) landing where
+they should. Then 60 frames of an ffmpeg test pattern containing no faces:
+**0 detections** — it is not hallucinating.
+
+End-to-end in release, synchronous (pre-threading), including preprocessing and
+decode:
+
+```
+face detect p50 8.40 ms   p95 11.12 ms   max 12.56 ms
+```
+
+(Debug builds run this at ~122 ms. Always measure `--release`.)
+
+This is the only model in the whole stack that has been proven correct end to
+end — real image in, plausible boxes out, zero false positives on a blank
+clip. Every other model in §5's table is "loads and runs fast"; only this one
+is also "produces the right answer."
+
+---
+
+## 7. Threading — capture and detection stop being the same clock (step 4)
+
+`src/pipeline/{mod.rs, frame_bus.rs, workers.rs}`.
+
+```
+capture thread ──► ArcSwap<Arc<Frame>>   latest-frame slot, overwrite
+                            │
+                            ▼
+detect thread   ── ticks at cadence.face_hz, owns the YuNet session,
+                   emits (Arc<Frame>, Signals) as ONE unit
+                            │
+                            ├──► ArcSwap<Arc<Detected>>   ← snapshot() / latest()
+                            └──► crossbeam Sender<Event>  ← events()
+```
+
+`Detected` keeps the frame and the signals derived from *that* frame together,
+as one unit, never separated. That is what makes a consumer's boxes align with
+the pixels structurally: there is no sequence number to match in the consumer,
+because there is nothing to keep in sync in the first place.
+
+`Detector` implements the MODELS.md §3 public API — `builder()`, `start()`,
+`stop()`, `events()`, `snapshot()`, `report()`. `events()` is wired and returns
+a real `Receiver<Event>`, but only degradation and recovery flow through it
+today; violations arrive with fusion at step 8. Consumers are written against
+the real channel now, so nothing about them changes when it starts carrying
+decisions.
+
+### Measured — threading did not cost anything
+
+```
+camera:0, 1280x720 MJPEG, 300 frames, release
+capture 30.23 fps    detect 14.91 fps    skipped 150 (50% of captured)
+detect  p50 5.27 ms  p95 6.62 ms   (total incl. pre/post p50 6.89 ms)
+```
+
+- **Capture held 30.23 fps** while detection ran at 14.9 Hz — the two rates are
+  now genuinely independent, which was the point.
+- **Skipped is exactly 50%**, which is what a 15 Hz worker reading a 30 fps
+  source should drop. Frames are discarded on purpose; a stale frame is
+  worthless. The count is exposed so saturation stays visible.
+- **Single-frame latency did not get worse** — it got slightly better than the
+  8.4 ms synchronous figure, because the detect thread no longer interleaves
+  JPEG writes and terminal printing between inferences.
+
+### A reporting bug the instrumentation exposed
+
+The first threaded run reported `detect p50 7.57 ms` and `total p50 7.57 ms` —
+identical, because both timers started at the same point and `YuNet::detect`
+did preprocessing internally. Two numbers that claim to measure different
+things and always agree are worse than one number.
+
+Fixed by splitting properly, which MODELS.md §11 asks for anyway: `detect_timed`
+now returns `StageTimings { preprocess_us, inference_us, postprocess_us }`.
+The real split at 1280×720 is **inference 5.3 ms, preprocess + decode 1.6 ms** —
+so letterboxing and NMS are ~23% of the face worker, which is worth knowing
+before anyone optimises the model.
+
+---
+
+## 8. The INT8 result, which contradicts the spec
+
+MODELS.md §5.1 calls YuNet's official INT8 "the happy exception — use it
+without hesitation", citing OpenCV Zoo's own accuracy evaluation.
+
+**On this CPU, INT8 is 10.7× slower than fp32**: 47.96 ms against 4.49 ms.
+
+The accuracy claim is fine and still holds — but it is a claim about accuracy,
+and it was read as though it settled speed. It does not.
+
+The usual explanation does not apply either: an i7-11850H is Tiger Lake and
+**has AVX-512 VNNI**. Counting op types in the file gives the real answer:
+
+```
+QLinearConv:      53      <- QOperator format
+QuantizeLinear:   10      <- QDQ would be hundreds, paired with Dequantize
+DequantizeLinear: 32
+```
+
+That is **QOperator**, which is trap #3 in §5.1's own table: *"S8S8 with
+QOperator will be slow on x86-64 CPUs and should be avoided in general."* The
+spec documented this precise failure mode and then exempted the one model that
+exhibits it.
+
+Consequences:
+
+- **Ship fp32 YuNet.** The INT8 file stays only as evidence for the write-up.
+- §5.1's "ship both and pick at startup via a micro-benchmark" policy is
+  vindicated — here it would have silently saved 43 ms per frame.
+- If INT8 is wanted later, quantise YuNet locally with
+  `quant_format=QuantFormat.QDQ`, `activation_type=QuantType.QUInt8`,
+  calibrated on real webcam frames, then re-benchmark. Never assume a
+  downloaded INT8 model is fast anywhere.
+
+This also resolves one of §13's open items (VNNI on target CPUs) in an
+unexpected direction: VNNI is present, and it did not save the model.
+
+---
+
+## 9. `deepscreen-viewer` — a test instrument, not the product
+
+MODELS.md never asks for this; it exists because eyeballing a face box track a
+real face in real time is a different kind of evidence than a latency table,
+and because the crate had no way to be watched without one. It is deliberately
+throwaway-grade: no framework, no bundler, no persistence, and it is not the
+adapter referenced in MODELS.md §12 (that one lives in `DeepScreen-DesktopApp`
+and does not exist yet — see §1, step 11).
+
+### What it is built from
+
+```
+deepscreen-viewer/
+├── src-tauri/
+│   ├── src/main.rs      commands, arg parsing, error framing, event forwarding
+│   └── src/preview.rs   downscale + JPEG encode + loopback MJPEG server
+└── dist/                index.html, style.css, main.js — no framework, no build step
+```
+
+It depends on `deepscreen-detect` by path and contains **no detection or
+decision logic** of its own: no thresholds, no hold timers, no hysteresis. It
+renders exactly what `Signals` contains, nothing inferred, nothing smoothed.
+The flag pills in the UI are labelled "raw signals — not violations" in the
+interface itself, because the moment that distinction blurs someone starts
+tuning a threshold in JavaScript, and `CONTEXT.md` §11 is what that looks like
+a year later — the same constant, three places, three different values.
+
+### Frame transport: MJPEG over loopback, not IPC
+
+MODELS.md §12 rules out sending frames through Tauri IPC — the old app's
+base64-JPEG-per-command pattern is fine at 3.3 Hz and catastrophic at frame
+rate. The viewer instead:
+
+1. A dedicated preview thread pulls the newest `Detected` from the same
+   `ArcSwap` the detect worker publishes to (drop-oldest — if encoding falls
+   behind, frames are skipped, never queued, and it never touches the detect
+   thread).
+2. Downscales to 640×360 (detection still runs at full source resolution —
+   only the preview shrinks) and JPEG-encodes at quality 70.
+3. Publishes a `PreviewItem { jpeg, signals, seq, width, height }` into its own
+   `ArcSwap`. Signals and jpeg travel together, so the boxes a client draws
+   describe the pixels it is currently showing, not a newer frame it has not
+   painted yet.
+4. A `tiny_http` server bound to `127.0.0.1` on an **ephemeral port** serves
+   `multipart/x-mixed-replace` at `/stream`. The frontend does
+   `<img src="http://127.0.0.1:PORT/stream">` and the browser decodes and
+   paints every frame with **zero JavaScript in the loop**.
+
+A `snapshot` Tauri command is the only thing that crosses IPC, polled by the
+frontend at ~30 Hz — a few hundred bytes of JSON (signals + pipeline stats),
+never pixels. This is the MODELS.md §3 push/poll split, proven a second,
+independent way.
+
+### Overlay: SVG over the image, not baked into the JPEG
+
+Boxes are drawn as an SVG layer positioned over the `<img>`, with `viewBox` set
+to the **source** resolution (e.g. `0 0 1280 720`) and
+`preserveAspectRatio="xMidYMid meet"`. `Signals` coordinates go straight into
+the SVG attributes unmodified — no scale factor is computed anywhere in
+JavaScript; the browser's own SVG viewport math does that. Nothing is
+rasterised into the JPEG, so toggling the overlay costs nothing and never
+touches the encode path.
+
+### Measured
+
+```
+preview encode p50 5.0 ms      640x360, quality 70, `image` crate
+stream          15.2 fps       91 multipart parts observed in 6.0 s
+frame size      ~18.3 KB       ≈ 290 KB/s over loopback
+detect p50      5.8 ms         with the preview thread running
+```
+
+**The preview does not steal time from detection.** `detect p50` in the viewer
+(5.8 ms) matches `detect-cli live` standalone (5.3–5.9 ms across runs) — the
+one criterion that would have made this not worth shipping if it had failed.
+
+Verified directly, not just inferred from the numbers: the raw multipart
+stream was captured with `curl` and parsed by hand — 61 JPEG SOI markers in a
+4-second slice, one extracted frame confirmed to be a complete, valid JPEG
+(correct SOI/EOI, opened and displayed correctly) showing the actual webcam
+picture.
+
+### What actually went visibly wrong while building it, and what that was worth
+
+Two real bugs, one false alarm — worth keeping distinct:
+
+1. **`detect_us` and `total_us` were the same number.** Same root cause as
+   §7's — both timers started at the point where `YuNet::detect` had already
+   done its own preprocessing internally. Fixed by the same `StageTimings`
+   split.
+2. **The flag pills and HUD were nearly invisible against video.** `#stage`
+   used `display: grid; place-items: center`, which is unnecessary once the
+   video already centres itself via `object-fit: contain`, and interacts with
+   absolutely-positioned children in ways worth avoiding on principle. The
+   off-state pill colour (`#4d5563` on a near-transparent dark panel) was also
+   too close to a dark video background to read reliably. Fixed by dropping
+   the grid in favour of a plain positioned block, giving `#flags` the same
+   opaque panel treatment as the HUD, and raising both to `z-index: 10`.
+3. **A false alarm worth recording as a lesson, not a bug.** After that CSS
+   fix, screenshots taken via a PowerShell/GDI+ capture script still appeared
+   to show no pills, which looked like the fix hadn't landed. It had — the
+   capture path itself was producing dimmed, colour-shifted screenshots, and
+   the pills were rendering correctly on the actual screen the whole time. A
+   diagnostic (`getBoundingClientRect` dump into the HUD) was half-written to
+   chase this before the correct read arrived from directly looking at the
+   running app rather than trusting a second-hand capture of it. The
+   diagnostic was removed unused. The instrument for checking "is the UI
+   right" should have been the UI, not a screenshot pipeline with its own
+   unverified colour handling.
+
+### Where this contradicted the brief
+
+1. **Preview encode is 5.0 ms, not the predicted 2–4 ms** for the `image`
+   crate at 640×360. Still cheap — 5 ms at 15 Hz on a dedicated thread is ~7.5%
+   of one core — so `turbojpeg` was not attempted. Revisit only if the preview
+   ever moves to full resolution.
+2. **No Vite, and no dev server at all.** The brief allowed Vite; it turned out
+   to be unnecessary. `frontendDist` points at a static `dist/`, so the app
+   builds and runs with plain `cargo run` and needs no npm, no bundler and no
+   watcher. `cargo tauri dev` also works (tauri-cli 2.x installed), but it is
+   not required.
+3. The ffmpeg-on-PATH question was resolved as **option 1, dev-machine only**,
+   per the brief's default. The viewer is a test instrument; making it portable
+   means doing step 2 properly with `crabcamera`, not bundling an 80 MB binary.
+
+### Run it
+
+```bash
+cd deepscreen-viewer/src-tauri
+cargo run --release                                        # camera:0
+cargo run --release -- --source file:../../deepscreen-detect/samples/_smoke_testsrc.mp4
+cargo run --release -- --source camera:0 --config dev.toml
+```
+
+Opens a window, camera live within ~1 s, boxes tracking a real face with no
+perceptible lag, HUD showing capture/detect fps, skip count, and detect
+p50/p95. Pointing it at `_smoke_testsrc.mp4` shows video with an empty overlay
+and `NO FACE` lit — there genuinely is no face in that clip, so this is the
+detector working, not degrading.
+
+---
+
+## 10. The object-detection gap — what "OBJECT never lights" actually means
+
+This is worth its own section because it is the single most likely thing to be
+misread from a glance at the viewer: **the `OBJECT` pill never lights, on any
+input, and that is correct — not a bug, not a threshold problem, not the model
+failing.**
+
+### Why, precisely
+
+`Signals.objects` is a `Vec<ObjectDetection>`. It is populated **only** by
+whatever writes to it, and nothing does. The detect thread (`workers.rs`) owns
+exactly one model — YuNet — and constructs every `Signals` with
+`objects: Vec::new()` by construction, not as a fallback. There is no code path
+in the pipeline today that could put anything else there. The viewer's `OBJECT`
+pill logic is `objects.length > 0`; against an always-empty vector that
+condition is always false. This is `SignalCoverage` from §3 made concrete:
+`produced_by.objects` is `false` for every frame that has ever been produced,
+and a correct viewer built against that would show a permanently-off pill,
+which is exactly what happens.
+
+By contrast, `NO FACE` and `MULTI FACE` work, because `faces` is real —
+YuNet is the one model actually wired (§6) — so `faces.len() == 0` and
+`faces.len() >= 2` are meaningful conditions today, not just plumbing waiting
+for a producer.
+
+### What is and is not done for objects
+
+**Done:**
+- `yolo26n.onnx` is downloaded, on disk, licence-identified (AGPL-3.0), and
+  benchmarked as a synthetic forward pass: 32.24 ms p50 / 35.49 ms p95 (§5).
+- `detect-cli inspect` confirmed its real interface: input `1x3x640x640`,
+  output `output0 [1,300,6]`, and per MODELS.md §5.3 that output is **NMS-free**
+  — each of the 300 rows is already `[x1, y1, x2, y2, confidence, class_id]` in
+  letterboxed pixel coordinates, filtered, with no separate NMS step required.
+- The render path in `deepscreen-viewer/dist/main.js` already iterates
+  `s.objects` exactly the way it iterates `s.faces` — red rect, class label,
+  confidence — and needs no changes when objects start arriving.
+- `ObjectThresholds` in `config.rs` already carries the allowlist
+  (`cell phone, book, laptop, tv, person`), a minimum score, and hold/clear
+  timers for when fusion (step 8) needs them.
+
+**Not done — this is step 7 of MODELS.md §11, and none of it exists yet:**
+- No preprocessing: no letterbox-to-640×640 for YOLO26n specifically (it needs
+  its own, separate from YuNet's — different input size handling is not
+  assumed identical just because both happen to be 640×640 today).
+- No postprocessing: no code reads `output0`, thresholds column 4 against
+  `ObjectThresholds.min_score`, maps column 5 to a label via the allowlist, or
+  undoes the letterbox on columns 0–3. This is meant to be simple — NMS-free
+  means no anchor decoding and no suppression loop, unlike YuNet — but "simple"
+  and "written" are different states, and right now it is neither started.
+- No worker thread. MODELS.md §6 puts objects on their own cadence (1–2 Hz),
+  reading the same frame bus independently of the face worker at
+  `intra_threads_large`. `pipeline/workers.rs` currently spawns exactly two
+  threads — capture and detect (face only) — and adding the object worker is
+  additive, not a rewrite, because each worker already owns its own
+  `last_seen` cursor into the bus (§7). But it has not been added.
+- **No accuracy validation of any kind.** Unlike YuNet (§6), which was proven
+  against a real image with a known face, YOLO26n has only ever been run on
+  zero tensors to measure timing. Whether its `(1,300,6)` output would be
+  decoded correctly by code that does not yet exist is, at this point, simply
+  unknown.
+
+### The decision this is blocked on
+
+MODELS.md §13 flags it and it is still open: **YOLO26n is AGPL-3.0.** Fine to
+have on disk and even to prototype against for an FYP; if DeepScreen ever ships
+closed-source, that requires either open-sourcing derivatives or an Ultralytics
+enterprise licence. The spec's own instruction is to decide *before* writing
+postprocessing around the `(1, 300, 6)` shape, because the alternatives —
+RF-DETR Nano, YOLOX-Nano, EfficientDet-Lite0 — are **not** NMS-free, so
+switching later means writing the anchor-decode-and-suppression code that
+YOLO26n currently lets this project skip entirely. Wiring YOLO26n now, before
+that decision, risks writing throwaway postprocessing.
+
+### What "wiring it" will look like when it happens
+
+Roughly: a `models/objects.rs` sibling to `models/face.rs`, much shorter
+because there is no NMS to write — letterbox in, one forward pass, threshold
+and label-map the 300 rows out. A third worker in `pipeline/workers.rs` at
+`cadence.object_hz` (default 1.0). `Signals.objects` starts being real, and at
+that point — with no viewer-side changes required — the `OBJECT` pill starts
+lighting whenever the allowlisted classes appear in frame.
+
+---
+
+## 11. Decisions made, and why
+
+| Decision | Reason |
+|---|---|
+| Crate lives outside the app repo | The app must keep working while this is built. No shared build, no shared lockfile, no risk. |
+| ffmpeg subprocess for video decode | An `ffmpeg-sys` build on Windows costs a day and decode speed is not what is being measured. `dir:` sources need nothing at all, so CI stays dependency-free. |
+| ffmpeg/DirectShow for the camera too | Bought a real live measurement immediately. Explicitly labelled as the harness path, to be replaced by `crabcamera`. |
+| Config floats are `f64` | With `f32`, the dumped config read `yaw_enter_rad = 0.3799999952316284`. The config file is the tuning surface; it has to be legible and diffable. Conversion to `f32` happens at the model boundary. |
+| DirectML **not** enabled yet | Step 3 establishes the CPU baseline that step 5 has to beat. Enabling both at once would make the improvement unattributable. |
+| `detect-cli inspect` written before any pre/postprocessing | Guessing a tensor interface produces plausible-looking garbage rather than an error. |
+| ORT logs quieted to `warn` by default | ORT logs every graph transform and arena reservation at INFO. But `warn` is kept, because a failed execution-provider registration comes through there and is the most misread failure in this stack. |
+| Modes that need models fail loudly | `bench --sweep-threads`, `replay --expect` each name the build step they arrive at, rather than silently doing nothing. |
+| `Detected` bundles frame + signals as one unit | So a consumer's overlay cannot drift from its pixels — no sequence matching required anywhere downstream, including in `deepscreen-viewer`. |
+| Viewer transport is MJPEG-over-loopback, not IPC | MODELS.md §12 rules out pixels over Tauri IPC outright; loopback HTTP lets the browser's own decoder do the frame-rate work instead of JavaScript. |
+| Viewer built with no frontend framework | It is a rendering harness for a crate under active development, not a product surface — the fastest way to avoid a render-loop bug is to not have a renderer capable of one. |
+| YOLO26n left unwired despite being downloaded and benchmarked | The AGPL-3.0 licensing call in §10 is supposed to happen *before* postprocessing is written around its output shape, not after. |
+
+Defaults were **corrected, not inherited** from `CONTEXT.md`: no-face hold is
+2500 ms rather than the old 1000 ms that fires on normal head movement; pose
+thresholds are absolute degrees needing no calibration; object detection does
+not require a face to be present, because a phone held over the face is exactly
+the case the old gating discarded.
+
+---
+
+## 12. What does **not** work yet
+
+Being explicit, because a half-built detector is easy to overstate:
+
+- **No gaze.** Model installed, decode not written. Nothing reports where a
+  candidate is looking.
+- **No head pose.** Model installed, rotation-matrix → Euler conversion not
+  written.
+- **No object detection.** `yolo26n.onnx` is on disk and benchmarked for
+  speed only; nothing flags a phone, book or second person. See §10 for the
+  full state and the reason it is blocked.
+- **No identity check.** ArcFace is on disk; no enrolment, no comparison.
+- **No violations at all.** There is no fusion layer, so nothing is ever
+  decided. `Violation`, `Event` and `Severity` are types with real producers
+  for exactly one thing so far — degradation/recovery — and no producer for
+  anything else.
+- **No `crabcamera`.** Camera capture is the ffmpeg harness path, in both the
+  CLI and the viewer.
+- **No calibration**, no evidence capture, no session report generation beyond
+  the in-memory `SessionReport` the pipeline already assembles.
+- **No production Tauri adapter.** `deepscreen-viewer` is not it — it is a
+  disposable instrument; the real §12 adapter in `DeepScreen-DesktopApp` is
+  step 11 and has not been started.
+
+What *does* work: capture from camera, video file or image directory,
+threaded and decoupled from detection; face detection with keypoints at
+5.3 ms model time / 6.9 ms total; a live windowed viewer with an MJPEG stream,
+SVG overlay and polling HUD that proves the whole pipeline end to end on a
+real face in real time; model inspection and benchmarking for all six files;
+config load/validate/dump; `Signals` JSONL recording and parsing.
+
+---
+
+## 13. Open items
+
+Carried from MODELS.md §13, plus what this work added:
+
+1. **AGPL-3.0 on YOLO26 — decide before step 7.** See §10 for the full
+   consequence chain. This is now the single most concrete blocked decision in
+   the project — the model is downloaded, benchmarked, and licence-identified,
+   and the only thing stopping it being wired is this call.
+2. **Whether DirectML actually engages on the lowest-spec target machine**, or
+   silently falls back. `tracing` is already subscribed so it will be visible.
+3. **ArcFace's dynamic batch axis** needs pinning before DirectML.
+4. **The clip corpus does not exist yet.** 15–20 labelled clips, *including
+   clean control clips* of innocent fidgeting — those matter more than the
+   violation clips, because false positives are what make a proctoring system
+   unusable and the false-positive rate cannot be measured without them.
+5. **MODELS.md §5.0 has three wrong rows** (§5 above). Not corrected, because
+   it is the authored spec — worth patching deliberately.
+
+---
+
+## 14. Command reference
+
+```bash
+cd deepscreen-detect
+
+cargo test                                              # 45 tests
+cargo build --release                                   # always measure release
+
+detect-cli devices --formats                            # cameras and their modes
+detect-cli inspect models/*.onnx                        # real tensor interfaces
+detect-cli bench --all --iters 50 --report bench.md     # per-model p50/p95
+detect-cli config --out dev.toml                        # every tunable number
+
+detect-cli live --source camera:0                       # now runs through Detector
+detect-cli live --source camera:0 --save-every 20       # + annotated JPEG snapshots
+detect-cli live --source file:clip.mp4                  # same, from a file
+detect-cli live --source dir:frames --paced             # same, from images
+detect-cli record --source file:clip.mp4 --out sig.jsonl
+detect-cli replay sig.jsonl                             # parse + coverage check
+```
+
+```bash
+cd deepscreen-viewer/src-tauri
+
+cargo run --release                                     # window, camera:0, live
+cargo run --release -- --source file:../../deepscreen-detect/samples/_smoke_testsrc.mp4
+cargo run --release -- --source camera:0 --config dev.toml
+```
+
+Both require `ffmpeg` and `ffprobe` on PATH for `camera:` and `file:` sources.
+`dir:` sources need nothing beyond the crate, which is what CI uses.
+
+---
+
+## 15. Suggested next step
+
+Two candidates, and they are no longer close — the object-detection gap in
+§10 is now blocked on a licensing decision, not on engineering effort, so it
+should not be next regardless of how ready `yolo26n.onnx` looks.
+
+**Gaze and head pose (step 6).** Both models are installed and benchmarked,
+both feed off the face crop that YuNet already produces, both are unambiguous
+in licence (MIT), and together they answer the question the system exists to
+ask: where is the candidate looking. Combined model cost is 11 ms on top of the
+current ~7 ms detect-thread total, comfortably inside the 66.7 ms budget at
+15 Hz. This is very likely the right next step.
+
+**Fusion (step 8).** The alternative case: `deepscreen-viewer` has just proven
+the whole pipeline works end to end on a live face, which makes this a
+reasonable moment to start turning signals into decisions rather than adding a
+fourth un-fused signal on top of face detection. It needs the clip corpus
+(§13.4) to tune against, which does not exist yet and is its own chunk of work.
+
+Either way: **the AGPL-3.0 call on YOLO26n (§10) should be made before step 7
+is attempted**, even though the model is the most "ready" of the four unwired
+ones — being ready to wire and being cleared to commit to are different
+states, and this project has already paid once for skipping that check on the
+model files themselves (§5).
+
+---
+
+## 16. The viewer becomes the product; pose and gaze land
+
+The brief changed: `deepscreen-viewer` is no longer a throwaway instrument, it
+**is** the cheating-detection module, shipped as a standalone Tauri app.
+Integration into `DeepScreen-DesktopApp` is explicitly out of scope and that
+repo remains untouched. §9 above should be read with that in mind — everything
+it says about the architecture holds; only the word "throwaway" is obsolete.
+
+### 16.1 The dim preview was a real bug, not a capture artifact
+
+§9 recorded this as "a false alarm worth recording as a lesson" — that the
+screenshots were dimmed by the capture path while the app rendered correctly.
+**That conclusion was wrong.** The app really was rendering dim, and the cause
+was one line of CSS:
+
+```css
+#error { display: grid; ... background: rgba(6, 8, 11, 0.94); }
+```
+
+The `hidden` attribute hides an element via the UA stylesheet's
+`[hidden] { display: none }`. **Any author rule that sets `display` overrides
+it**, because author styles beat the UA stylesheet. So the error scrim — 94%
+opaque, `inset: 0` — was painted over the stage permanently, from the first
+run. The HUD and pills survived it only because they had been given
+`z-index: 10` while chasing the earlier "invisible pills" symptom, which lifted
+them above the scrim and left the video and SVG underneath it.
+
+That also explains the original "invisible pills": before the `z-index` was
+added they were under the same scrim, at 6% opacity, against a dark panel.
+
+Fix: `#error[hidden] { display: none; }`.
+
+Two lessons worth keeping. First, the earlier symptom and this one had a single
+cause, and the intermediate fix (`z-index`) partially masked it — which is what
+made it look like a capture artifact. Second, a measuring instrument must never
+dim the thing being measured; the scrim should have been suspicious the moment
+it existed.
+
+A second, unrelated layout issue surfaced alongside: the HUD now reports
+`view 1536x794  dpr 1.25`. The display runs at 125% scaling and the CSS
+viewport is wider than the visible client area, so the right edge of the frame
+(and anything anchored to it) can fall off-screen. `#stage` was moved from
+`width: 100vw` to `position: fixed; inset: 0`, which is the correct way to size
+to the visual viewport, but the underlying DPI mismatch is not fully resolved
+and is recorded here as open.
+
+### 16.2 The app is self-contained
+
+Models are copied into `deepscreen-viewer/models/` and declared as Tauri
+resources. `cargo tauri build` produces both an MSI and an NSIS installer, and
+the built `.exe` was run **from an unrelated working directory** and resolved
+its models correctly:
+
+```
+model directory = ...\target\release\_up_\models
+```
+
+Tauri preserves the relative path of bundled resources, so a resource declared
+as `../models/*.onnx` lands under `_up_/models` — the resolver checks that
+first, then the development layouts, so `cargo run` from the repo still works
+with no build step.
+
+Startup was restructured to build the `Detector` inside `setup()` rather than
+before the Tauri builder, because resource resolution needs an `AppHandle`. The
+library still receives plain paths in `Config` and knows nothing about how they
+were found.
+
+**Two models are deliberately excluded from the app bundle.** `yolo26n.onnx` is
+AGPL-3.0, and shipping it inside a distributed `.exe` is precisely the licensing
+problem the YOLOX decision exists to avoid; the INT8 YuNet is the QOperator file
+that runs 10.7x slower here (§8). Both stay in `deepscreen-detect/models/` as
+benchmark evidence. The app ships 24 MB of models, not 34 MB.
+
+The startup log also confirms the ORT settings are really applied, not merely
+requested: `session.dynamic_block_base: 4`, `intra_op thread_pool_size: 2`.
+
+### 16.3 Head pose
+
+`src/models/pose.rs`. Both the normalization and the Euler conversion are
+**ported from the model author's `onnx_inference.py`**, not derived. Two things
+that would have been wrong if assumed:
+
+- **This model wants RGB**, the opposite of YuNet. The reference converts
+  OpenCV's BGR to RGB before inference; our frames are already RGB.
+- **ImageNet mean/std normalization**, not raw 0-255 and not a plain `/255`.
+
+The rotation-matrix-to-Euler conversion returns `(pitch, yaw, roll)` in that
+order, with an explicit gimbal-lock branch where roll collapses to zero rather
+than being amplified out of a near-zero denominator.
+
+The crop is squared and expanded 25% per side before resize; head-pose models
+are sensitive to framing and a tight face box degrades them quietly.
+
+#### Validating the sign without turning anyone's head
+
+Unit tests pin the maths against synthetic rotation matrices, but those cannot
+prove the *model's* axes match the world — a model reporting yaw with the
+opposite sign passes every one of them. `tests/pose_sign.rs` closes that gap
+with a physical invariant instead of a labelled clip: **mirroring an image
+horizontally must negate yaw and roll and leave pitch alone.** Measured on a
+real frame:
+
+```
+pose original  yaw -3.8  pitch -8.4  roll -10.2
+pose mirrored  yaw +2.3  pitch -7.9  roll +10.5
+```
+
+Yaw flips, roll flips, pitch survives. The convention is correct.
+
+### 16.4 Gaze, and eye-in-head
+
+`src/models/gaze.rs`. The bin geometry is read from the author's postprocess:
+`bins = 90`, `binwidth = 4`, `angle_offset = 180`, so
+
+```
+degrees = sum(softmax(logits) * [0..89]) * 4 - 180
+```
+
+which spans **-180..+176 degrees** — a Gaze360-style full range. Assuming the
+MPIIGaze-style +/-90 span would have halved every angle: a signal that still
+moves in the right direction, still looks alive in a HUD, and quietly wrecks
+every threshold tuned against it. There is a test whose only job is to fail if
+someone "fixes" the constants to the narrower span.
+
+**Eye-in-head** is `gaze - head`, computed on the same frame from the same
+face, stored as `Gaze { yaw_rad, pitch_rad, eye_yaw_rad, eye_pitch_rad }` with
+the optional fields `None` when pose is unavailable — `None` rather than zero,
+because zero reads as "eyes centred".
+
+That subtraction is only valid if both models call the same physical direction
+positive, and nothing guarantees that across two repositories. **Settled from
+the two references' own drawing code**, which is decisive and needs no fixture:
+
+- `gaze-estimation`'s `draw_gaze`: `dx = -length*sin(yaw)*cos(pitch)`,
+  `dy = -length*sin(pitch)`
+- `head-pose-estimation`'s `draw_axis`: negates yaw, then
+  `x3 = size*sin(-yaw)`, `y3 = -size*cos(yaw)*sin(pitch)`
+
+Both map **+yaw to the left of screen and +pitch upward**. The conventions
+agree, so the subtraction is sound as written.
+
+**Blink gating** is deliberately coarse and labelled as such in code. A real
+eye-aspect-ratio needs eyelid landmarks, and YuNet provides five points with no
+eyelids, so a genuine EAR is not available from this model set. What the gate
+catches is the detector losing confidence or the eye keypoints collapsing —
+which is what a blink, motion blur and a half-turned head all look like from
+here. On those frames the previous gaze value is held rather than a fresh one
+emitted.
+
+### 16.5 `record` is now exhaustive, and why that matters
+
+`detect-cli record` previously wrote empty `Signals`; it now runs the real
+models. The first version drove the `Detector` and produced **1 line from 28
+frames** — correct behaviour for a live session, wrong for a corpus. The
+pipeline samples at cadence and drops what it missed, so a recording would
+depend on how fast the recording machine happened to be.
+
+Recording is now deliberately synchronous and single-threaded, bypassing the
+`Detector` entirely and processing **every frame in order**. The same clip
+always produces the same JSONL, which is the property replay-based tuning rests
+on. `--save-every` had a related defect — it keyed off captured `seq`, which
+the detect worker only sees every other one of, so it silently saved nothing
+whenever the multiples landed on skipped frames. It now counts detected frames.
+
+### 16.6 Measured
+
+```
+camera:0, 1280x720 MJPEG, release, face + pose + gaze on one worker
+capture 30.4 fps   detect 14.9 fps   skipped ~50%
+detect p50 7.3 ms  p95 9.2 ms   (total incl. pre/post p50 8.9 ms)
+```
+
+Against the face-only baseline of 5.3 ms model time, pose adds roughly its
+benchmarked 1.6 ms. Capture rate is unchanged, which is the point of the
+threading in §7 — adding two models to the detect worker did not touch it.
+
+> **⚠ This figure does not include gaze, despite the heading saying it does.**
+>
+> The arithmetic gives it away and the text above already contained the
+> evidence: 5.3 + 1.6 ≈ 7.3 accounts for face and pose exactly, and gaze's
+> benchmarked **9.51 ms** is simply not in the sum. A worker running all three
+> cannot have a p50 below the floor of its parts.
+>
+> The mechanism was `gaze.rs`: when the reliability gate fired it returned a
+> held previous value together with `StageTimings::default()` — zeros. A gated
+> frame therefore contributed nothing to the latency total while still
+> reporting a gaze value, so it looked like a frame where gaze ran instantly.
+> Nothing in `Signals` distinguished the two.
+>
+> §B of the coverage rework removes the mechanism: gaze now returns
+> `Gated(reason)` with no value and no timings, and `SignalCoverage` records
+> per-frame what each slot did.
+>
+> **This number is left in place rather than replaced.** What it should be is
+> not yet known — that is diagnostic C1, which measures how often the gate
+> actually fires. Recording the contradiction is the job of this file.
+
+### 16.7 What is not yet validated, honestly
+
+`tests/gaze_convention.rs` checks the handedness empirically as well, by
+mirroring. **It has not yet run against a real face.** The fixture batch
+captured for it turned out to be an empty room — the person had stepped away —
+so the run passed vacuously. That was itself a defect in the test, now fixed:
+"no fixtures at all" is a clean skip, but "fixtures present and no face in any
+of them" is a hard failure with instructions to recapture, because a test that
+reports success without measuring anything is worse than one that fails.
+
+So: the handedness conclusion rests on the reference-implementation argument in
+§16.4, which is solid, and the empirical confirmation is still outstanding. The
+same applies to this phase's headline acceptance test — a clip with the head
+deliberately still and the eyes moving, asserting that `eye_yaw` moves while
+`head_yaw` stays flat. Both need about thirty seconds of deliberate footage:
+
+```bash
+# with a face in shot, including some frames with the head turned ~20 degrees
+detect-cli live --source camera:0 --max-frames 60 --save-every 5 --save-dir samples/faces
+cargo test --release --test gaze_convention -- --nocapture
+```
+
+Until that runs, gaze and pose sit in the same category §5 put the other models
+in — decoded carefully and plausibly, but not yet proven correct against ground
+truth the way YuNet was.
+
+---
+
+## 17. Objects: YOLOX-Nano, and the thread-spinning trap
+
+### 17.1 The licence decision, executed
+
+YOLOX-Nano (Apache 2.0) replaces YOLO26n (AGPL-3.0). §10's open question is
+closed. `yolo26n.onnx` stays in `deepscreen-detect/models/` as benchmark
+evidence for the write-up and is **deliberately excluded from the app bundle**,
+because shipping an AGPL model inside a distributed `.exe` is exactly the
+problem the decision avoids.
+
+**The export step in the brief turned out to be unnecessary.** It called for
+cloning the YOLOX repository and running `tools/export_onnx.py`, which needs
+torch. Megvii publish `yolox_nano.onnx` directly as a release asset — 3.49 MB,
+no Python, no torch, no export. This is the second time an "it needs a Python
+export" assumption has been wrong (the first was YOLO26n itself, §5), and both
+times a single API query settled it.
+
+### 17.2 Verified interface, and what it is not
+
+```
+images   Float32  [1, 3, 416, 416]
+output   Float32  [1, 3549, 85]
+```
+
+3549 = 52² + 26² + 13², the three stride levels concatenated in that order;
+85 = 4 box + 1 objectness + 80 COCO classes.
+
+**The released export does not decode grids in-graph.** YOLOX supports both and
+its demos differ, which is why the brief said to check rather than assume. The
+decode lives in `demo_postprocess`, so it lives in `objects.rs` here:
+`cx = (raw_cx + gx) · s`, `cy = (raw_cy + gy) · s`, `w = exp(raw_w) · s`,
+`h = exp(raw_h) · s`, with score = objectness × class probability.
+
+Two preprocessing details that would have degraded rather than broken it:
+
+1. **BGR, not RGB.** YOLOX's demo feeds `cv2.imread` output straight in. Same
+   as YuNet — and the *opposite* of the pose and gaze models running in the
+   same pipeline. Three models, two channel orders, all in one crate.
+2. **No normalization at all.** YOLOX removed mean/std subtraction; input is
+   raw 0-255 float. Dividing by 255 "for consistency" with pose and gaze would
+   have broken it silently.
+
+Letterbox is top-left with **pad 114**, not black — matching both YOLOX's
+`preproc` and `face.rs`'s existing convention, so undoing it is one divide with
+no offset term.
+
+`face.rs`'s NMS was promoted to a shared `models::nms` rather than written a
+second time. It now takes a `(class, bbox, score)` key and suppresses only
+within a class; faces pass a constant class and behave exactly as before.
+Class-wise matters here: a confident phone must not erase an overlapping book.
+
+### 17.3 Validated against ground truth, not just latency
+
+§5 recorded that only YuNet had cleared the correctness bar. Objects now clear
+it too, using YOLOX's **own canonical test image** — the dog/bicycle/truck
+photo from its repository, whose expected output every YOLO demo documents. No
+annotation file needed:
+
+```
+dog          0.83  box (133, 207) 192x336
+car          0.81  box (467, 78) 225x93
+bicycle      0.81  box (47, 132) 524x299
+truck        0.28  box (464, 77) 218x97
+```
+
+All three expected classes, at their canonical positions, with boxes inside the
+source frame and plausible areas. That single test exercises the grid decode,
+the stride ordering, the channel order, the pad value and the letterbox inverse
+at once — any one of them wrong and it fails.
+
+A second test runs the same image through the **shipped** allowlist and asserts
+it returns nothing, and a clean 60-frame clip containing no phone and no book
+produced **zero object detections and zero faces**. False positives are what
+make proctoring unusable, so that is the number that matters.
+
+### 17.4 Classes narrowed from five to two
+
+`cell phone, book`. Dropped: `laptop` is the machine the exam runs on, `tv` is
+usually the candidate's own monitor, and `person >= 2` already duplicates the
+`MultipleFaces` signal from YuNet. Three of the old five were near-guaranteed
+false-positive sources.
+
+### 17.5 The finding: ORT thread spinning, not thread counts
+
+Adding the 1 Hz object worker tripled the 15 Hz face worker's latency:
+
+```
+face detect p50   7.3 ms  -> 23.18 ms      (object worker added)
+```
+
+That is precisely the acceptance criterion the brief said must not move, and
+MODELS.md §6 rule 2 predicts the shape of it — but rule 2 is about *intra-op
+thread counts*, and the counts were already budgeted (2 for the small models,
+4 for YOLOX, on 8 physical cores). The counts were not the problem.
+
+The cause is visible in the ORT startup log: `thread_pool_allow_spinning: 1`.
+**ORT's thread pools spin-wait between inferences by default.** That is a
+sensible default for back-to-back batch inference and actively harmful here:
+every worker in this pipeline is cadence-driven with idle gaps far longer than
+the work — the object worker runs 12 ms of inference once per second and then
+its four threads spin for the remaining 988 ms, occupying cores the face worker
+needs.
+
+Disabling it (`with_intra_op_spinning(false)`, `with_inter_op_spinning(false)`,
+exposed as `runtime.allow_spinning`, default off):
+
+```
+face detect p50  23.18 ms -> 5.94 ms       p95 33.12 -> 7.95 ms
+capture          30.8 fps unchanged
+```
+
+Better than the 7.3 ms baseline *before* objects existed, because the face
+worker had been paying the same tax for its own idle gaps all along. Worth
+adding to the §6 rule-2 mental model: budget the thread counts **and** turn off
+spinning for anything that runs on a cadence.
+
+### 17.6 Measured
+
+| model | p50 ms | p95 ms | licence |
+|---|---|---|---|
+| **yolox_nano** | **12.04** | 14.70 | Apache 2.0 |
+| yolo26n (rejected) | 32.24 | 35.49 | AGPL-3.0 |
+
+Re-measured on a quiet machine, 50 iterations after 5 warm-up, CPU EP:
+
+| model | p50 ms | p95 ms | max ms |
+|---|---|---|---|
+| **yolox_nano** | **11.56** | 12.84 | 14.16 |
+| yolo26n (rejected) | 30.98 | 33.87 | 35.46 |
+
+Both runs agree to within a millisecond. The permissive model is **2.7×
+faster**: the AGPL question and the performance question had the same answer,
+which is not something that could have been assumed before measuring. The
+model choice is vindicated on both counts.
+
+For context, the rest of the same run:
+
+| model | p50 ms | p95 ms |
+|---|---|---|
+| yunet (fp32) | 4.71 | 5.97 |
+| yunet (int8) | 45.95 | 49.01 |
+| headpose | 1.54 | 2.10 |
+| gaze | 9.51 | 10.61 |
+| arcface | 4.71 | 7.22 |
+
+Live, with all four models running (face + pose + gaze at 15 Hz, objects at
+1 Hz):
+
+```
+capture 30.7 fps   detect 15.0 fps   skipped 51%
+detect p50 5.94 ms   p95 7.95 ms
+```
+
+> **⚠ Same defect as §16.6 — gaze was not executing.** Face, pose and gaze have
+> floors of 4.71 + 1.54 + 9.51 = **15.76 ms**; a 5.94 ms p50 is below the sum of
+> its parts and therefore impossible. 4.71 + 1.54 = 6.25 accounts for it almost
+> exactly, so what was measured is face + pose with gaze gated out.
+>
+> A live session with gaze demonstrably running — the HUD showed non-zero gaze
+> and eye-in-head values — read **23.5 ms p50 / 30.0 ms p95** instead, which is
+> the 15.76 ms floor plus three preprocessing passes. That is the honest order
+> of magnitude.
+>
+> This also means **the object worker's effect on the face worker has never
+> been measured cleanly**. The 5.94 figure was supposed to show that turning
+> off ORT thread spinning (§17.5) left the face worker faster than before
+> objects existed. The spinning finding itself stands — it was measured
+> against a like-for-like baseline — but the headline "better than before"
+> compared two numbers that both excluded gaze.
+>
+> Left in place, not replaced. Diagnostic C1 measures the gate's actual firing
+> rate; until that lands, the correct figure is unknown and inventing one would
+> repeat the original error.
+
+### 17.7 What is not done
+
+**3e, fine-tuning on proctoring data, has not been done.** The brief calls it
+the highest-value remaining accuracy work and permits shipping COCO weights
+with the limitation recorded, which is what has happened. The concern is real:
+COCO learned "cell phone" as a small object in cluttered room photos, whereas a
+proctoring phone is held 20 cm from a face, fills much of the frame, is often
+half-occluded by a hand and frequently screen-on and blown out. That is a
+different distribution, and the off-the-shelf model has not been tested against
+it — a phone has never actually been held in front of this pipeline.
+
+`detect-cli record` now runs objects on every frame alongside face, pose and
+gaze, so the corpus a fine-tune would be evaluated against is already
+recordable.
