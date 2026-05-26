@@ -478,7 +478,21 @@ pub struct RuntimeConfig {
     /// overhead exceeds the win. Sweep 1..cores and pick on p50/p95
     /// (MODELS.md §6 rule 2).
     pub intra_threads_small: usize,
-    /// YOLO's graph is big and its rate is low, so it can use more.
+    /// The object session's budget. Used only by YOLOX-Nano today.
+    ///
+    /// MODELS.md §6 rule 2 reasoned "big graph, so it can use more" — right
+    /// for the object model measured alone, wrong once it runs alongside a
+    /// 15 Hz worker that is never idle. Extra threads here do not make the
+    /// object session's own 1 Hz cadence any more comfortable — 11.6 ms
+    /// against a 1000 ms budget has no need of parallelism — but they do
+    /// compete for the same physical cores the face worker's threads are
+    /// using at that exact moment, on whatever fraction of each second the
+    /// two happen to overlap. Measured cost at 4: the face worker's p50 went
+    /// from 19.5 ms to 37.5 ms with a face in frame, turning off ORT's
+    /// spin-wait (`allow_spinning`, below) made no difference to that gap —
+    /// which is what rules out spinning as the mechanism and points at raw
+    /// thread-count contention instead. At 1, the object session has no
+    /// pool to contend with.
     pub intra_threads_large: usize,
     pub inter_threads: usize,
     /// ORT's constant-cost parallelism model causes high latency variance;
@@ -507,7 +521,7 @@ impl Default for RuntimeConfig {
     fn default() -> Self {
         Self {
             intra_threads_small: 2,
-            intra_threads_large: 4,
+            intra_threads_large: 1,
             inter_threads: 1,
             dynamic_block_base: 4,
             execution_provider: ExecutionProviderPref::default(),
