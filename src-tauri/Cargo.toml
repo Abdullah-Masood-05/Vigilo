@@ -3,6 +3,9 @@ name = "deepscreen-viewer"
 version = "0.1.0"
 edition = "2021"
 description = "Exam proctoring desktop app: camera frames in, proctoring signals out, one project."
+# Two binaries live here now — the app and `detect-cli` — so "the binary" is
+# ambiguous and `cargo tauri build` refuses to guess which one to bundle.
+default-run = "deepscreen-viewer"
 
 # Formerly two repositories: a headless `deepscreen-detect` library and this
 # app, connected by a path dependency. Consolidated so a clone of this one

@@ -696,6 +696,12 @@ the case the old gating discarded.
 
 ## 12. What does **not** work yet
 
+> **Point-in-time, and now largely superseded.** Gaze, head pose and objects
+> all landed after this was written (§16, §17). Left unedited because this file
+> records what was true when, not a rolling status. **For the current list see
+> §18.7 and §18.4** — the one item that has moved *backwards* since is
+> prohibited objects, where `book` turned out not to detect at all.
+
 Being explicit, because a half-built detector is easy to overstate:
 
 - **No gaze.** Model installed, decode not written. Nothing reports where a
@@ -1004,6 +1010,10 @@ threading in §7 — adding two models to the detect worker did not touch it.
 > **This number is left in place rather than replaced.** What it should be is
 > not yet known — that is diagnostic C1, which measures how often the gate
 > actually fires. Recording the contradiction is the job of this file.
+>
+> **Answered in §18.3.** The gate fires on 1.7% of frames, almost all of them
+> `NoFace`, and the honest face + pose + gaze figure over ten minutes is
+> **27.03 ms p50 / 30.87 ms p95**. Use that, not the 7.3 ms above.
 
 ### 16.7 What is not yet validated, honestly
 
@@ -1206,6 +1216,11 @@ detect p50 5.94 ms   p95 7.95 ms
 > Left in place, not replaced. Diagnostic C1 measures the gate's actual firing
 > rate; until that lands, the correct figure is unknown and inventing one would
 > repeat the original error.
+>
+> **Both questions are answered in §18.3 and §18.2.** Gaze runs on 98.3% of
+> frames, so the honest figure is **27.03 ms p50 / 30.87 ms p95**. And the
+> object worker's effect, measured cleanly at last, was **thread count rather
+> than spin state** — spinning was already off when the 5.94 ms was recorded.
 
 ### 17.7 What is not done
 
@@ -1218,6 +1233,238 @@ half-occluded by a hand and frequently screen-on and blown out. That is a
 different distribution, and the off-the-shelf model has not been tested against
 it — a phone has never actually been held in front of this pipeline.
 
+**Now tested — see §18.4.** The prediction was half right and half wrong in the
+worst possible way. Phones detect fine (0.86 peak). **Books do not detect at
+all** (0.149 max, zero frames above 0.25), which makes 3e **required rather
+than optional**.
+
 `detect-cli record` now runs objects on every frame alongside face, pose and
 gaze, so the corpus a fine-tune would be evaluated against is already
 recordable.
+
+---
+
+## 18. Consolidation, the contention fix, and the first honest baseline
+
+The work in this section closes three things left open above: the
+two-repository split, the object worker's effect on the face worker (§17.5,
+§17.6), and the "gaze was not executing" defect that made §16.6 and §17.6
+unusable. It also tested prohibited objects against real objects for the first
+time, which produced the most important negative result in this document.
+
+### 18.1 One project
+
+`deepscreen-detect` was a separate crate so the detection code could not
+accidentally acquire a Tauri dependency, and it earned that: it caught the INT8
+slowdown, three wrong tensor shapes, and the latency defect in §16.6. But two
+repositories means two of everything — two lockfiles, two histories, a path
+dependency to keep pointed at the right revision — and for one person under a
+deadline that overhead stopped paying for itself.
+
+Everything moved into `deepscreen-viewer/src-tauri` as a **relocation, not a
+rewrite**: the modules became the crate root (`src/lib.rs`), `main.rs` shrank
+to window setup and its two `#[tauri::command]`s, and `detect-cli` survives as
+`src/bin/detect-cli.rs`. The constraint the split enforced still holds, one
+level down: **`tauri::` appears only in `main.rs` and its command handlers**,
+never in the library modules, and `cargo test` still exercises the detection
+code with no window and no camera.
+
+`deepscreen-detect` is archived on disk with its history intact. It is never
+built and never referenced — the app's model-directory resolver no longer even
+lists it as a fallback path.
+
+Proof the consolidation actually achieved standalone-ness, rather than being
+asserted: the whole folder was copied to an unrelated directory, built there
+with `cargo build --release`, and run. It works.
+
+**Manifest note.** Two binaries now live in one package, so `cargo tauri build`
+refused to guess which one to bundle (`failed to find main binary`).
+`default-run = "deepscreen-viewer"` in `Cargo.toml` resolves it.
+
+### 18.2 §17.5 was right about the mechanism and wrong about the cure
+
+§17.5 found that ORT's thread pools spin-wait and that turning spinning off
+fixed the object worker's effect on the face worker. The first half is correct.
+The second was measured against the §17.6 defect and did not survive a clean
+test.
+
+Reading the vendored `ort` 2.0.0-rc.12 source settled what the fix actually
+was: `SessionBuilder::with_intra_op_spinning` literally calls
+`add_config_entry("session.intra_op.allow_spinning", ...)`. The per-session
+config-entry API and the spinning toggle are the same thing, and it was
+**already active globally**. So spin-wait could not be the residual cause.
+
+A paired A/B — same build, same session, face in frame, only `object_hz`
+varied — showed it plainly:
+
+| objects | face worker p50 | before the fix |
+|---|---|---|
+| 1 Hz | 17.93 ms | 37.52 ms |
+| 0.05 Hz | 17.79 ms | 19.51 ms |
+
+The remaining mechanism was **thread count, not spin state**. The object
+session was built with `intra_threads_large = 4` on MODELS.md §6's "big graph
+to more threads" rule. That reasoning is sound in isolation and wrong once a
+15 Hz worker runs concurrently: four extra threads compete for physical cores
+during every overlap window whether they spin or block. Dropping the object
+session to `intra_threads_large = 1` closed the gap to **0.14 ms**, comfortably
+inside the 1 ms pass criterion.
+
+The lesson generalises past ORT: a thread budget tuned for a model in isolation
+is not a thread budget for that model sharing a machine.
+
+### 18.3 The honest Phase 1-3 baseline
+
+Ten minutes, live camera, face present throughout, shipped defaults
+(`object_hz = 1.0`, objects `min_score = 0.4`), the §18.2 fix in place.
+
+```
+18001 frames captured in 600.23s
+capture 30.01 fps   detect 14.93 fps   skipped 9048 (50% of captured)
+detect p50 27.03 ms   p95 30.87 ms   (total incl. pre/post p50 30.71 ms)
+```
+
+Per-slot `SlotState` over 8950 detected frames:
+
+| slot | produced | skipped (cadence) | skipped (gated) | failed | not configured |
+|---|---|---|---|---|---|
+| face | 8950 (100%) | — | — | — | — |
+| pose | 8783 (98.1%) | — | 151 (1.7%) | **16 (0.2%)** | — |
+| gaze | 8797 (98.3%) | — | 153 (1.7%) | — | — |
+| objects | 600 (6.7%) | 8350 (93.3%) | — | — | — |
+| identity | — | — | — | — | 8950 (100%) |
+
+Gaze gate breakdown: `NoFace` 151, `EyesTooClose` 2.
+
+**This replaces the unknown left open in §16.6 and §17.6.** Those sections
+correctly refused to quote a number until the gate's real firing rate was
+measured; it is now measured. Four things follow:
+
+- **The blink-gating hypothesis is dead.** Gaze ran on **98.3%** of detected
+  frames. Every gated frame but two was `NoFace` — the gate is not eating the
+  signal, and `EyesTooClose` fired twice in ten minutes.
+- **27.03 ms p50 is the real face-worker cost** and it is consistent with the
+  floors: 4.71 + 1.54 + 9.51 = 15.76 ms of pure inference plus three
+  preprocessing passes. It sits in the same family as the 23.5 ms reading
+  §16.6 took with gaze demonstrably running, and nowhere near the impossible
+  5.94 ms.
+- **The §18.2 A/B's absolute value does not reproduce here** — 17.93 ms there
+  versus 27.03 ms across ten minutes. The A/B was a paired comparison with only
+  one variable changed, so its *conclusion* stands; its absolute number was a
+  short sample and should not be quoted as a baseline. The ten-minute figure is
+  the one to use. Why the shorter run read low has not been chased down.
+- **Objects ran 600 times in 600.23 s** — exactly 1.0 Hz, cadence honoured.
+
+Detection held 14.93 fps against a 15 Hz target for the full ten minutes at a
+27 ms p50, so the pipeline is **not saturated**: the cadence is the limiter,
+not the models. Capture never dropped below 30.0 fps.
+
+**`SlotState` immediately earned itself.** `pose failed 16` is a real model
+error on real frames that the previous boolean scheme reported as an ordinary
+result. Nobody was looking for it. The rate is 0.2% and it is recorded here
+rather than chased.
+
+### 18.4 Prohibited objects, tested against real objects
+
+First time a phone and a book have been physically held in front of this
+pipeline (§17.7 flagged that they never had). 2700 frames, 90 seconds,
+`min_score = 0.05` and the allowlist widened to all 80 COCO classes so the
+decode could be judged on what the model saw rather than on what the allowlist
+permits.
+
+**Phone: validated.** Two windows, peaks **0.798** and **0.858**.
+
+| window | max | mean | frames >= 0.50 | >= 0.25 |
+|---|---|---|---|---|
+| t = 3-13 s | 0.798 | 0.298 | 26% | 54% |
+| t = 74-80 s | 0.858 | 0.427 | 42% | 70% |
+
+**Book: does not work. One of the two prohibited-object classes does not
+currently detect.**
+
+Whole session: `book` maxed at **0.149**, with **zero** frames above 0.25 and
+16 frames of 2700 above even 0.05. Both poses the class exists to catch — open
+and held up, flat on a desk and tilted — produced nothing but noise, while
+`person` held 0.88-0.92 across the same frames. The model was working; the
+class was not.
+
+This is a **distribution and model limitation, not a pipeline bug**. The decode
+is validated against YOLOX's own canonical test image (§17.3) and the same run
+found phones at 0.86. COCO's `book` is a weak class to begin with — usually
+learned as spines on a shelf or a small object in a cluttered scene — and a
+book held open at reading angle, filling much of the frame, is off that
+distribution in exactly the way §17.7 predicted for phones and got wrong about
+books.
+
+**Consequence: 3e fine-tuning is now required, not optional.** §17.7 recorded
+it as the highest-value remaining accuracy work that could be deferred by
+shipping COCO weights with the limitation noted. That trade was acceptable
+while the limitation was theoretical. It is not acceptable now that it is
+measured: shipping this means shipping a prohibited-object detector that cannot
+see books. Not started — recorded.
+
+### 18.5 Two Phase 4 fusion requirements this produced
+
+Both fall out of the same run and neither is a detection bug. Recorded here
+because fusion will be written against this document.
+
+**1. The phone signal must be a bucket, not a string match.** The phone was
+sometimes labelled `remote` (0.66) and once `laptop` (0.545) on frames where it
+was plainly a phone. The shipped allowlist is the literal pair
+`["cell phone", "book"]`, so those frames are dropped — a real detection thrown
+away on a label. Fusion must treat `cell phone` + `remote` (and probably
+`laptop`) as **one handheld-device class**. Confusion between visually similar
+COCO classes is expected; a literal-string allowlist is what turns it into a
+false negative.
+
+**2. Single-frame thresholding fails on peaky output.** Only 26-42% of frames
+cleared 0.5 while a phone was continuously present. A per-frame threshold would
+flicker on and off through an obvious violation. Fusion must accumulate
+confidence over several samples using the `hold_ms` / `clear_ms` machinery that
+already exists in `Config` — at 1 Hz that means a hold spanning multiple
+seconds, and the object cadence has to be read as a sampling rate rather than
+an event rate.
+
+### 18.6 The pitch offset is a calibration constant, closed
+
+Carried since §16.4: gaze pitch appeared never to read DOWN. Measured with
+deliberate head and eye movement, segment boundaries taken from the
+`pose_pitch` trace:
+
+| segment | pose_pitch | gaze_pitch | eye_pitch |
+|---|---|---|---|
+| baseline, at screen (0-28 s) | −4.00 | +8.17 | +12.17 |
+| lap / down (29-32 s) | −32.61 | **−25.08** | +7.53 |
+| centre (33-37 s) | −4.58 | +12.78 | +17.36 |
+| ceiling / up (38-40 s) | +40.22 | **+18.02** | −22.21 |
+| eyes only, head still (41-62 s) | +5.95 (sd **1.29**) | +15.76 | +9.82 |
+
+**This is not a decode bug and the sign is correct.** Gaze pitch separates down
+(−25.08) from up (+18.02) cleanly and in the right direction. What it has is a
+**systematic offset of roughly +12 to +15°**: sitting normally at the screen,
+gaze pitch idles at +8 to +16 instead of near zero, so an 8° deadband reads UP
+almost permanently and only crosses into DOWN when the subject looks at their
+actual lap. Consistent with the camera sitting above the screen, which is the
+normal laptop geometry.
+
+**Record it as a Phase 6 calibration constant — one subtraction, measured per
+user during setup — not as a model or decode problem.** No pitch-decode change
+is warranted and none was made.
+
+The eye-in-head acceptance test also passes, and this is the signal the whole
+approach depends on: across 41-62 s the head was genuinely still (pose pitch
+sd 1.29°, and 0.45-0.77° over most two-second blocks) while `eye_pitch` swung
+between +2.8 and +19.7 in two-second means. **Eyes move independently of the
+head in the data, not just in principle.**
+
+Two honest caveats on that signal. It is noisy — per-frame sd of 7.6° means a
+single frame carries almost no information, so fusion must smooth it. And the
+same +12-15° offset applies, so its swing sits entirely in the positive half.
+
+### 18.7 What this section did not do
+
+Deliberately out of scope, all of it recorded rather than acted on: no
+fine-tuning was started, no model was swapped, no pitch decode was touched, no
+threshold was tuned, and the roughly 50 MB of avoidable bundle weight
+(`detect-cli` and `DirectML.dll` both ship in the installer, and ArcFace is
+bundled but unused) was left alone.

@@ -12,3 +12,9 @@ CLAUDE.md
 # Screenshots may contain a real person.
 *.png
 !src-tauri/icons/*.png
+
+# Diagnostic runs. A `Signals` recording is a real person's face geometry, head
+# pose and gaze over time — same reasoning as the screenshot rule above. Scoped
+# to the scratch location so a deliberate replay fixture can still be added.
+/src-tauri/*.jsonl
+/src-tauri/diag.toml

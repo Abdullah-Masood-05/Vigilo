@@ -251,7 +251,10 @@ impl SlotState {
 /// Carried per-frame so the skip rate can be attributed rather than guessed.
 /// A gate that fires constantly for one reason is a threshold problem; one
 /// that fires evenly across reasons is a framing problem.
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+// `Ord` so gate reasons can key an ordered map and tally in a stable order —
+// a breakdown whose rows move between runs is harder to compare than one that
+// does not.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum GateReason {
     /// No face detected on this frame, so there was nothing to crop.

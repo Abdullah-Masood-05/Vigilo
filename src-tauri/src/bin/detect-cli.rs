@@ -246,6 +246,61 @@ fn cmd_devices(formats: bool) -> Result<()> {
 // live
 // ---------------------------------------------------------------------------
 
+/// Per-slot `SlotState` counts over a live run.
+///
+/// `live` reported latency and frame counts but nothing about *which signals
+/// actually existed* on those frames — so a session where gaze was gated for
+/// nine minutes read exactly like one where it ran throughout. Counting the
+/// states the pipeline already publishes is the difference between a latency
+/// number and a baseline.
+#[derive(Default)]
+struct CoverageTally {
+    slots: BTreeMap<&'static str, BTreeMap<&'static str, u64>>,
+    gates: BTreeMap<GateReason, u64>,
+    frames: u64,
+}
+
+impl CoverageTally {
+    fn observe(&mut self, c: &SignalCoverage) {
+        self.frames += 1;
+        for (name, state) in [
+            ("face", c.face),
+            ("pose", c.pose),
+            ("gaze", c.gaze),
+            ("objects", c.objects),
+            ("identity", c.identity),
+        ] {
+            *self.slots.entry(name).or_default().entry(state.as_str()).or_default() += 1;
+        }
+        if let Some(reason) = c.gaze_gate {
+            *self.gates.entry(reason).or_default() += 1;
+        }
+    }
+
+    fn print(&self) {
+        if self.frames == 0 {
+            return;
+        }
+        println!("\nsignal coverage over {} detected frame(s):", self.frames);
+        for (slot, states) in &self.slots {
+            let breakdown: Vec<String> = states
+                .iter()
+                .map(|(s, n)| {
+                    format!("{s} {n} ({:.1}%)", 100.0 * *n as f64 / self.frames as f64)
+                })
+                .collect();
+            println!("  {slot:<9} {}", breakdown.join("   "));
+        }
+        if self.gates.is_empty() {
+            println!("  gaze gate  never fired");
+        } else {
+            let breakdown: Vec<String> =
+                self.gates.iter().map(|(r, n)| format!("{r:?} {n}")).collect();
+            println!("  gaze gate  {}", breakdown.join("   "));
+        }
+    }
+}
+
 struct LiveOpts {
     overlay: bool,
     paced: bool,
@@ -312,6 +367,7 @@ fn cmd_live(cfg: &Config, source: &str, opts: LiveOpts) -> Result<()> {
     let mut seen = 0u64;
     let mut last_saved_seq = u64::MAX;
     let mut last_report = Instant::now();
+    let mut coverage = CoverageTally::default();
 
     while det.is_running() {
         if let Some(d) = det.latest() {
@@ -323,6 +379,7 @@ fn cmd_live(cfg: &Config, source: &str, opts: LiveOpts) -> Result<()> {
                 let nth = seen;
                 seen += 1;
                 last_saved_seq = d.frame.seq;
+                coverage.observe(&d.signals.produced_by);
                 if save_every.is_some_and(|n| n > 0 && nth.is_multiple_of(n)) {
                     save_frame(&d.frame, &d.signals.faces, &save_dir)?;
                     saved += 1;
@@ -380,6 +437,7 @@ fn cmd_live(cfg: &Config, source: &str, opts: LiveOpts) -> Result<()> {
         s.stats.detect_p95_us as f32 / 1000.0,
         s.stats.total_p50_us as f32 / 1000.0,
     );
+    coverage.print();
     if saved > 0 {
         println!("saved {saved} frame(s) to {}", save_dir.display());
     }
