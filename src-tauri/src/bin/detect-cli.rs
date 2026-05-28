@@ -33,7 +33,10 @@ use deepscreen_viewer::report::Latencies;
 use std::collections::BTreeMap;
 
 use deepscreen_viewer::models::gaze::GazeOutcome;
-use deepscreen_viewer::types::{FaceDetection, GateReason, SignalCoverage, Signals, SlotState};
+use deepscreen_viewer::fusion;
+use deepscreen_viewer::types::{
+    Event, FaceDetection, GateReason, SignalCoverage, Signals, SlotState, ViolationKind,
+};
 use deepscreen_viewer::{Detector, SourceSpec};
 
 #[derive(Parser, Debug)]
@@ -192,7 +195,7 @@ fn run(cli: Cli) -> Result<()> {
         Cmd::Bench { source, model, all, sweep_threads, iters, report } => {
             cmd_bench(&cfg, source.as_deref(), model.as_deref(), all, sweep_threads, iters, report)
         }
-        Cmd::Replay { path, expect } => cmd_replay(&path, &expect),
+        Cmd::Replay { path, expect } => cmd_replay(&cfg, &path, &expect),
         Cmd::Inspect { models } => cmd_inspect(&models),
         Cmd::Config { out } => cmd_config(&cfg, out),
     }
@@ -821,7 +824,7 @@ fn bench_models(
 // replay
 // ---------------------------------------------------------------------------
 
-fn cmd_replay(path: &PathBuf, expect: &[String]) -> Result<()> {
+fn cmd_replay(cfg: &Config, path: &PathBuf, expect: &[String]) -> Result<()> {
     let text = std::fs::read_to_string(path).map_err(|e| DetectError::io(path, e))?;
 
     let mut count = 0u64;
@@ -835,6 +838,7 @@ fn cmd_replay(path: &PathBuf, expect: &[String]) -> Result<()> {
     let mut slots: BTreeMap<&'static str, BTreeMap<&'static str, u64>> = BTreeMap::new();
     let mut gates: BTreeMap<&'static str, u64> = BTreeMap::new();
     let mut frames_with_face = 0u64;
+    let mut signals: Vec<Signals> = Vec::new();
 
     for (i, line) in text.lines().enumerate() {
         if line.trim().is_empty() {
@@ -868,6 +872,7 @@ fn cmd_replay(path: &PathBuf, expect: &[String]) -> Result<()> {
         if let Some(reason) = c.gaze_gate {
             *gates.entry(reason.as_str()).or_default() += 1;
         }
+        signals.push(s);
     }
 
     let span_ms = last_t.saturating_sub(first_t.unwrap_or(0));
@@ -907,15 +912,106 @@ fn cmd_replay(path: &PathBuf, expect: &[String]) -> Result<()> {
         }
     }
 
-    if !expect.is_empty() {
-        return Err(DetectError::Config(
-            "--expect needs the fusion layer, which arrives at build step 8; \
-             the recording above parsed cleanly"
-                .into(),
-        ));
+    // ---- fusion, zero inference -------------------------------------------
+    //
+    // This is what recording `Signals` was for: the decision layer runs over a
+    // real session in milliseconds, so tuning a threshold is edit TOML, re-run,
+    // diff. Tuning that requires re-running models does not get done.
+    let events = fusion::replay(&signals, cfg);
+
+    println!("\n  violation timeline:");
+    if events.is_empty() {
+        println!("    (none)");
     }
-    println!("\n(fusion arrives at build step 8 — this is a parse and coverage check)");
+    let mut started = 0usize;
+    for event in &events {
+        match event {
+            Event::ViolationStarted(v) => {
+                started += 1;
+                println!(
+                    "    {:>8.2}s  START  {:<18} {:<9} {}",
+                    v.t_start_ms as f32 / 1000.0,
+                    v.kind.as_str(),
+                    format!("{:?}", v.severity).to_lowercase(),
+                    v.subject.clone().unwrap_or_default()
+                );
+                for c in &v.contributing {
+                    println!("                     {:?}: {}", c.signal, c.detail);
+                }
+            }
+            Event::ViolationEnded(v) => {
+                let end = v.t_end_ms.unwrap_or(v.t_start_ms);
+                println!(
+                    "    {:>8.2}s  END    {:<18} after {:.2}s",
+                    end as f32 / 1000.0,
+                    v.kind.as_str(),
+                    (end.saturating_sub(v.t_start_ms)) as f32 / 1000.0
+                );
+            }
+            other => println!("    {other:?}"),
+        }
+    }
+    println!("\n  {started} violation(s)");
+
+    if !expect.is_empty() {
+        check_expectations(expect, &events)?;
+        println!("  all {} expectation(s) met", expect.len());
+    }
     Ok(())
+}
+
+/// Assert a `kind@secs` or `kind@start-end` expectation against a timeline.
+///
+/// A window rather than an instant, because the exact frame a hold timer
+/// expires on depends on the rate the clip was captured at. Pinning to a frame
+/// index would make every expectations file specific to one recording.
+fn check_expectations(expect: &[String], events: &[Event]) -> Result<()> {
+    for spec in expect {
+        let (kind_str, window) = spec.split_once('@').ok_or_else(|| {
+            DetectError::Config(format!("--expect {spec}: want KIND@SECS or KIND@START-END"))
+        })?;
+        let kind: ViolationKind = kind_str
+            .parse()
+            .map_err(|e| DetectError::Config(format!("--expect {spec}: {e}")))?;
+        let (lo, hi) = match window.split_once('-') {
+            Some((a, b)) => (parse_secs(a, spec)?, parse_secs(b, spec)?),
+            None => {
+                let t = parse_secs(window, spec)?;
+                (t - 1.5, t + 1.5)
+            }
+        };
+
+        let hit = events.iter().any(|e| match e {
+            Event::ViolationStarted(v) => {
+                let t = v.t_start_ms as f32 / 1000.0;
+                v.kind == kind && t >= lo && t <= hi
+            }
+            _ => false,
+        });
+        if !hit {
+            let seen: Vec<String> = events
+                .iter()
+                .filter_map(|e| match e {
+                    Event::ViolationStarted(v) => {
+                        Some(format!("{}@{:.2}s", v.kind.as_str(), v.t_start_ms as f32 / 1000.0))
+                    }
+                    _ => None,
+                })
+                .collect();
+            return Err(DetectError::Config(format!(
+                "expected {} to start between {lo:.2}s and {hi:.2}s, but it did not. Saw: {}",
+                kind.as_str(),
+                if seen.is_empty() { "nothing".to_string() } else { seen.join(", ") }
+            )));
+        }
+    }
+    Ok(())
+}
+
+fn parse_secs(s: &str, spec: &str) -> Result<f32> {
+    s.trim().parse::<f32>().map_err(|_| {
+        DetectError::Config(format!("--expect {spec}: {s} is not a number of seconds"))
+    })
 }
 
 // ---------------------------------------------------------------------------

@@ -1,10 +1,10 @@
 //! The worker loops (MODELS.md §6).
 //!
-//! Two threads today: capture, and detect. The spec's topology has object and
-//! identity workers alongside detect, at their own cadences, reading the same
-//! bus — those arrive at steps 7 and 9 and slot in without changing anything
-//! here, because each worker owns its own `last_seen` cursor and its own
-//! sessions.
+//! Four threads: capture, detect (face -> pose -> gaze at 15 Hz), objects at
+//! 1 Hz, and identity at 0.2 Hz. Each of the three model workers owns its own
+//! `last_seen` cursor over the same latest-frame bus and its own sessions, so
+//! adding one never changed the others — which is why the topology in
+//! MODELS.md §6 could be built in three separate steps.
 //!
 //! Every worker obeys the same three rules: it owns its sessions outright, it
 //! reads the latest frame rather than a queue, and it never blocks capture.
@@ -20,6 +20,7 @@ use crate::config::Config;
 use crate::direction::DirectionTracker;
 use crate::models::face::YuNet;
 use crate::models::gaze::{GazeNet, GazeOutcome};
+use crate::models::identity::{cosine_similarity, ArcFace};
 use crate::models::objects::YoloxNano;
 use crate::models::pose::HeadPoseNet;
 use crate::types::{DegradeReason, Event, GateReason, SignalCoverage, Signals, SlotState};
@@ -101,6 +102,8 @@ pub(super) fn detect_loop(
     let mut directions = DirectionTracker::new(&cfg.thresholds.debug_direction);
     // Cursor over object results, so each is reported on exactly one frame.
     let mut last_object_seq = 0u64;
+    let mut last_identity_seq = 0u64;
+    let mut fusion = crate::fusion::FusionEngine::new(&cfg);
 
     loop {
         if shared.stop.load(Ordering::Relaxed) {
@@ -202,6 +205,8 @@ pub(super) fn detect_loop(
                     // consumed; later frames get an empty list and
                     // `SkippedCadence`, never a carried-forward value.
                     let (objects, objects_state) = shared.take_new_objects(&mut last_object_seq);
+                    let (identity_match, identity_state) =
+                        shared.take_new_identity(&mut last_identity_seq);
 
                     let signals = Signals {
                         seq: frame.seq,
@@ -210,12 +215,13 @@ pub(super) fn detect_loop(
                         head_pose,
                         gaze,
                         objects,
+                        identity_match,
                         produced_by: SignalCoverage {
                             face: SlotState::Produced,
                             pose: pose_state,
                             gaze: gaze_state,
                             objects: objects_state,
-                            identity: SlotState::NotConfigured,
+                            identity: identity_state,
                             gaze_gate,
                         },
                         // Bucketed here, on the same frame's angles, so the
@@ -223,6 +229,34 @@ pub(super) fn detect_loop(
                         debug_directions: Some(directions.update(head_pose, gaze)),
                         ..Default::default()
                     };
+
+                    // Fusion runs here, on the detect thread, immediately after
+                    // the signals it reads are assembled. It is single-threaded
+                    // by construction — one owner, no locks — and costs
+                    // microseconds of arithmetic, so it does not belong on a
+                    // thread of its own and must not run on two.
+                    for event in fusion.step(&signals, signals.t_ms) {
+                        if let Event::ViolationStarted(v) | Event::ViolationEnded(v) = &event {
+                            if let Ok(mut log) = shared.violation_log.lock() {
+                                // A start is replaced by its own end rather
+                                // than appended twice, so the log holds one
+                                // row per violation with its final duration.
+                                if let Some(existing) = log.iter_mut().find(|e| {
+                                    e.kind == v.kind
+                                        && e.subject == v.subject
+                                        && e.t_start_ms == v.t_start_ms
+                                }) {
+                                    *existing = v.clone();
+                                } else {
+                                    log.push(v.clone());
+                                }
+                            }
+                        }
+                        let _ = events.send(event);
+                    }
+                    if let Ok(mut active) = shared.active_violations.lock() {
+                        *active = fusion.active_detail();
+                    }
 
                     let detected = Detected {
                         frame,
@@ -263,6 +297,27 @@ pub(super) fn detect_loop(
         if let Some(rest) = period.checked_sub(tick.elapsed()) {
             std::thread::sleep(rest);
         }
+    }
+
+    // Close anything still open. A session that ends mid-violation would
+    // otherwise record a start with no end, and the report could not say how
+    // long it lasted — or whether it ever finished.
+    let final_t = started.elapsed().as_millis() as u64;
+    for event in fusion.finish(final_t) {
+        if let Event::ViolationEnded(v) = &event {
+            if let Ok(mut log) = shared.violation_log.lock() {
+                if let Some(existing) = log
+                    .iter_mut()
+                    .find(|e| e.kind == v.kind && e.subject == v.subject && e.t_start_ms == v.t_start_ms)
+                {
+                    *existing = v.clone();
+                }
+            }
+        }
+        let _ = events.send(event);
+    }
+    if let Ok(mut active) = shared.active_violations.lock() {
+        active.clear();
     }
 
     tracing::debug!(frames = shared.frames_detected.load(Ordering::Relaxed), "detect thread finished");
@@ -314,6 +369,92 @@ pub(super) fn object_loop(mut model: YoloxNano, cfg: Config, shared: Arc<Shared>
         }
     }
     tracing::debug!("object thread finished");
+}
+
+/// Identity, at 0.2 Hz — the slowest worker, and the one allowed to be.
+///
+/// A face embedding takes ~5 ms and a candidate's identity does not change
+/// between frames, so anything faster spends CPU to learn nothing. The cadence
+/// is also what makes the fusion rule sane: three consecutive failing checks
+/// is roughly fifteen seconds of sustained mismatch, which no single bad crop
+/// can fake.
+pub(super) fn identity_loop(mut model: ArcFace, cfg: Config, shared: Arc<Shared>) {
+    let period = Duration::from_secs_f64(1.0 / cfg.cadence.identity_hz.max(0.05));
+    let mut last_seen = 0u64;
+
+    loop {
+        if shared.stop.load(Ordering::Relaxed) {
+            break;
+        }
+        if shared.capture_done.load(Ordering::Relaxed) && shared.bus.latest().seq <= last_seen {
+            break;
+        }
+
+        let tick = Instant::now();
+        if let Some((frame, _missed)) = shared.bus.take_new(&mut last_seen) {
+            // The identity worker runs its own face detection nowhere: it
+            // reuses whatever the detect worker last saw. Running YuNet twice
+            // on the same picture to save a lock would cost more than the lock.
+            let face = shared
+                .latest
+                .load_full()
+                .as_ref()
+                .as_ref()
+                .and_then(|d| d.signals.faces.first().cloned());
+
+            if let Some(face) = face {
+                // A low-scoring box is a bad crop, and a bad crop is where
+                // false mismatches come from. Skipping is not a failure.
+                if (face.score as f64) < cfg.thresholds.face.min_score {
+                    shared.publish_identity(None, frame.seq, SlotState::SkippedGated);
+                } else {
+                    match model.embed(&frame, &face) {
+                        Ok((embedding, _timings)) => {
+                            let enrolling = shared.enrol_request.swap(false, Ordering::Relaxed);
+                            if enrolling {
+                                if let Ok(mut slot) = shared.enrolled.lock() {
+                                    tracing::info!("enrolled reference face");
+                                    *slot = Some(embedding.clone());
+                                }
+                            }
+                            let reference =
+                                shared.enrolled.lock().ok().and_then(|e| e.clone());
+                            match reference {
+                                Some(reference) => {
+                                    let score = cosine_similarity(&reference, &embedding);
+                                    shared.publish_identity(
+                                        Some(score),
+                                        frame.seq,
+                                        SlotState::Produced,
+                                    );
+                                }
+                                // Nobody has enrolled, so there is nothing to
+                                // compare against. `NotConfigured` rather than
+                                // a pass — an unenrolled session must not read
+                                // as a verified one.
+                                None => shared.publish_identity(
+                                    None,
+                                    frame.seq,
+                                    SlotState::NotConfigured,
+                                ),
+                            }
+                        }
+                        Err(e) => {
+                            tracing::warn!(error = %e, "identity embedding failed");
+                            shared.publish_identity(None, frame.seq, SlotState::Failed);
+                        }
+                    }
+                }
+            } else {
+                shared.publish_identity(None, frame.seq, SlotState::SkippedGated);
+            }
+        }
+
+        if let Some(rest) = period.checked_sub(tick.elapsed()) {
+            std::thread::sleep(rest);
+        }
+    }
+    tracing::debug!("identity thread finished");
 }
 
 /// Frames per second as `f32` bits, for lock-free publication through an

@@ -221,3 +221,107 @@ body {
   white-space: pre-wrap;
   text-align: center;
 }
+
+/* ---- enrolment ---- */
+
+#enrol {
+  margin-top: 8px;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  padding: 5px 8px;
+  border-radius: 4px;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(46, 82, 128, 0.9);
+  color: #dce6f2;
+  cursor: pointer;
+}
+
+#enrol:disabled {
+  background: rgba(40, 46, 56, 0.9);
+  color: #6d7787;
+  cursor: default;
+}
+
+/* ---- violation log ---- */
+
+/* Bottom-left, opposite the HUD, because the two answer different questions:
+   the HUD is "what is happening now", this is "what has happened". */
+#log {
+  position: absolute;
+  left: 12px;
+  bottom: 12px;
+  z-index: 10;
+  width: 340px;
+  max-height: 34%;
+  display: flex;
+  flex-direction: column;
+  padding: 10px;
+  background: rgba(8, 10, 14, 0.72);
+  border: 1px solid rgba(255, 255, 255, 0.09);
+  border-radius: 6px;
+}
+
+.log-title {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: #7c8797;
+  margin-bottom: 6px;
+}
+
+#log-rows {
+  overflow-y: auto;
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 11px;
+  line-height: 1.7;
+}
+
+.log-row {
+  display: flex;
+  gap: 6px;
+  align-items: baseline;
+  color: #c6d0de;
+  border-left: 2px solid rgba(224, 76, 76, 0.8);
+  padding-left: 6px;
+}
+
+/* A closed violation is history; an open one is the current situation. Dimming
+   the closed ones is the whole reason durations are worth writing back. */
+.log-row.ended {
+  color: #79838f;
+  border-left-color: rgba(120, 130, 145, 0.5);
+}
+
+.log-row b {
+  color: #8fa3bd;
+  font-weight: 500;
+}
+
+.log-row i {
+  font-style: normal;
+}
+
+.log-row u {
+  text-decoration: none;
+  color: #d8b26a;
+}
+
+.log-row .sev {
+  font-style: normal;
+  margin-left: auto;
+  font-size: 10px;
+  color: #7c8797;
+  text-transform: uppercase;
+}
+
+.log-row .dur {
+  min-width: 52px;
+  text-align: right;
+  color: #7c8797;
+}
+
+.log-row.sev-critical b,
+.log-row.sev-critical .sev {
+  color: #ef8080;
+}

@@ -22,11 +22,17 @@
       </div>
 
       <div id="flags">
-        <div class="flags-title">raw signals<br /><span>not violations</span></div>
+        <div class="flags-title">violations<br /><span id="enrol-state">not enrolled</span></div>
         <div class="pill" id="flag-noface">NO FACE</div>
+        <div class="pill" id="flag-neverseen">NEVER SEEN</div>
         <div class="pill" id="flag-multiface">MULTI FACE</div>
         <div class="pill" id="flag-object">OBJECT</div>
+        <div class="pill" id="flag-head">HEAD TURNED</div>
+        <div class="pill" id="flag-gaze">GAZE OFF</div>
+        <div class="pill" id="flag-identity">IDENTITY</div>
+        <div class="pill" id="flag-lost">SIGNAL LOST</div>
         <div class="pill" id="flag-degraded">DEGRADED</div>
+        <button id="enrol">Enrol face</button>
 
         <!--
           Temporary validation aid, not fusion. Every string here is computed
@@ -42,6 +48,17 @@
           <div class="dir-row"><b>GAZE</b><i id="dir-gaze-h">—</i><i id="dir-gaze-v">—</i></div>
           <div class="dir-row"><b>EYE</b><i id="dir-eye-h">—</i><i id="dir-eye-v">—</i></div>
         </div>
+      </div>
+
+      <!--
+        Edge-triggered, appended from the `detection:event` stream. Nothing
+        here polls: a violation is a discrete thing that happened, and drawing
+        it from a level-triggered snapshot would mean redrawing rows that have
+        not changed thirty times a second.
+      -->
+      <div id="log">
+        <div class="log-title">violation log</div>
+        <div id="log-rows"></div>
       </div>
 
       <div id="error" hidden></div>

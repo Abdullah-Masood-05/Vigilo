@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "DeepScreen Viewer — raw signals, not violations",
+        "title": "DeepScreen Viewer",
         "width": 1340,
         "height": 880,
         "resizable": true

@@ -16,6 +16,7 @@
 
 pub mod face;
 pub mod gaze;
+pub mod identity;
 pub mod objects;
 pub mod pose;
 

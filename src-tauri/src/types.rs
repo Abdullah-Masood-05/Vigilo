@@ -6,7 +6,7 @@
 //! replayed through fusion thousands of times with zero inference.
 
 use std::sync::Arc;
-use std::time::{Instant, SystemTime};
+use std::time::Instant;
 
 use serde::{Deserialize, Serialize};
 
@@ -302,7 +302,10 @@ pub struct SignalCoverage {
     pub gaze_gate: Option<GateReason>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+// `Ord` so a violation kind can key an ordered map: fusion tracks one open
+// violation per (kind, subject), and an ordered map keeps the event sequence
+// stable between runs, which is what makes replay diffable.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ViolationKind {
     /// No face in frame for longer than the hold.
@@ -313,8 +316,17 @@ pub enum ViolationKind {
     HeadTurnedAway,
     GazeOffScreen,
     ProhibitedObject,
-    /// Cosine similarity against the enrolled embedding fell through the floor.
-    IdentityDrift,
+    /// Cosine similarity against the enrolled embedding fell through the floor
+    /// on several consecutive checks.
+    IdentityMismatch,
+    /// A signal a decision depends on has been absent long enough to matter.
+    ///
+    /// Not a violation by the candidate — a statement that the system cannot
+    /// currently see. It is here rather than in `DegradeReason` because a
+    /// covered camera is indistinguishable from a wedged model from the
+    /// proctor's side, and both mean the same thing: this stretch of the
+    /// session is unproctored. Silence must never read as innocence.
+    SignalLost,
 }
 
 impl ViolationKind {
@@ -326,8 +338,34 @@ impl ViolationKind {
             ViolationKind::HeadTurnedAway => "head_turned_away",
             ViolationKind::GazeOffScreen => "gaze_off_screen",
             ViolationKind::ProhibitedObject => "prohibited_object",
-            ViolationKind::IdentityDrift => "identity_drift",
+            ViolationKind::IdentityMismatch => "identity_mismatch",
+            ViolationKind::SignalLost => "signal_lost",
         }
+    }
+
+}
+
+/// Parse the [`ViolationKind::as_str`] form.
+///
+/// Used by `detect-cli replay --expect`, so a typo in an expectations file is
+/// a reported error rather than a rule that silently never matches.
+impl std::str::FromStr for ViolationKind {
+    type Err = String;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        // Short aliases as well as the canonical names: these get typed by
+        // hand on a command line.
+        Ok(match s {
+            "no_face" | "noface" => ViolationKind::NoFace,
+            "never_seen" | "neverseen" => ViolationKind::NeverSeen,
+            "multiple_faces" | "multiface" => ViolationKind::MultipleFaces,
+            "head_turned_away" | "head" => ViolationKind::HeadTurnedAway,
+            "gaze_off_screen" | "gaze" => ViolationKind::GazeOffScreen,
+            "prohibited_object" | "object" | "phone" => ViolationKind::ProhibitedObject,
+            "identity_mismatch" | "identity" => ViolationKind::IdentityMismatch,
+            "signal_lost" | "lost" => ViolationKind::SignalLost,
+            other => return Err(format!("`{other}` is not a violation kind")),
+        })
     }
 }
 
@@ -355,9 +393,24 @@ pub struct Violation {
     pub kind: ViolationKind,
     pub severity: Severity,
     pub confidence: f32,
-    pub t_start: SystemTime,
+    /// Milliseconds since session start — the same timebase as [`Signals::t_ms`].
+    ///
+    /// **Was `SystemTime`.** Fusion is a pure function so that replaying a
+    /// recording produces a byte-identical event sequence every time, and a
+    /// wall clock cannot do that: the same JSONL replayed twice would carry
+    /// two different sets of timestamps and no diff of two runs would ever be
+    /// empty. Session-relative milliseconds are also what a proctor reviewing
+    /// a recording actually wants — "at 4:12 into the exam", not an absolute
+    /// instant. The wall-clock start of the session belongs on the session
+    /// report, once, not on every violation.
+    pub t_start_ms: u64,
     /// `None` = still ongoing.
-    pub t_end: Option<SystemTime>,
+    pub t_end_ms: Option<u64>,
+    /// Which bucket, slot or class this is about, when the kind alone is not
+    /// specific enough — `handheld_device` for an object, `gaze: NoFace` for a
+    /// lost signal.
+    #[serde(default)]
+    pub subject: Option<String>,
     pub evidence: Option<EvidenceRef>,
     /// Which signals argued for this violation, and how strongly. This is what
     /// lets a proctor reading the report see *why* (MODELS.md §4).

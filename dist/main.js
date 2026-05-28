@@ -20,10 +20,10 @@ const el = {
   overlay: document.getElementById("overlay"),
   hud: document.getElementById("hud-lines"),
   error: document.getElementById("error"),
-  noFace: document.getElementById("flag-noface"),
-  multiFace: document.getElementById("flag-multiface"),
-  object: document.getElementById("flag-object"),
   degraded: document.getElementById("flag-degraded"),
+  enrol: document.getElementById("enrol"),
+  enrolState: document.getElementById("enrol-state"),
+  logRows: document.getElementById("log-rows"),
   dirFrame: document.getElementById("dir-frame"),
   dirHeadH: document.getElementById("dir-head-h"),
   dirHeadV: document.getElementById("dir-head-v"),
@@ -31,6 +31,20 @@ const el = {
   dirGazeV: document.getElementById("dir-gaze-v"),
   dirEyeH: document.getElementById("dir-eye-h"),
   dirEyeV: document.getElementById("dir-eye-v"),
+};
+
+// Pill id per violation kind, using the `ViolationKind::as_str` names exactly
+// as Rust emits them. A kind with no pill simply does not get one; the log
+// still records it.
+const PILLS = {
+  no_face: "flag-noface",
+  never_seen: "flag-neverseen",
+  multiple_faces: "flag-multiface",
+  prohibited_object: "flag-object",
+  head_turned_away: "flag-head",
+  gaze_off_screen: "flag-gaze",
+  identity_mismatch: "flag-identity",
+  signal_lost: "flag-lost",
 };
 
 let sawDegradedEvent = false;
@@ -48,13 +62,70 @@ let viewBox = "";
 let lastObjects = { detections: [], seq: -1 };
 
 // Events are edge-triggered and low-rate — the opposite of the polled
-// snapshot. Silent until fusion lands at step 8.
+// snapshot. Fusion is their producer.
+//
+// The log is built here rather than from `snapshot` on purpose: a violation is
+// a discrete thing that happened at a time, and a row once written never
+// changes except to gain its duration. Polling a growing list thirty times a
+// second to redraw unchanged rows is precisely the frame-rate re-render the
+// whole IPC design exists to prevent.
 listen("detection:event", (event) => {
-  console.log("detection:event", event.payload);
-  if (event.payload && String(event.payload.event).includes("degraded")) {
+  const payload = event.payload;
+  if (!payload) return;
+  const kind = String(payload.event || "");
+
+  if (kind === "degraded") {
     sawDegradedEvent = true;
+    return;
+  }
+  if (kind === "recovered") {
+    sawDegradedEvent = false;
+    return;
+  }
+  if (kind === "violation_started") {
+    appendViolation(payload);
+  } else if (kind === "violation_ended") {
+    closeViolation(payload);
   }
 });
+
+// Every string below is Rust's own: `kind`, `severity` and `subject` are
+// printed verbatim. No threshold, no comparison and no severity decision
+// happens in this file.
+function rowId(v) {
+  return `v-${v.kind}-${v.subject || ""}-${v.t_start_ms}`;
+}
+
+function secs(ms) {
+  const t = (ms || 0) / 1000;
+  const m = Math.floor(t / 60);
+  return `${m}:${String((t % 60).toFixed(1)).padStart(4, "0")}`;
+}
+
+function appendViolation(v) {
+  const row = document.createElement("div");
+  row.className = `log-row sev-${v.severity}`;
+  row.id = rowId(v);
+  row.innerHTML =
+    `<b>${secs(v.t_start_ms)}</b> <i>${v.kind}</i>` +
+    `${v.subject ? ` <u>${v.subject}</u>` : ""}` +
+    `<em class="sev">${v.severity}</em><span class="dur">ongoing</span>`;
+  el.logRows.prepend(row);
+
+  // Unbounded growth over a three-hour exam is a leak with a UI. The full
+  // record lives in Rust; this is a window onto the recent end of it.
+  while (el.logRows.childElementCount > 200) {
+    el.logRows.lastElementChild.remove();
+  }
+}
+
+function closeViolation(v) {
+  const row = document.getElementById(rowId(v));
+  if (!row) return;
+  const dur = ((v.t_end_ms || v.t_start_ms) - v.t_start_ms) / 1000;
+  row.querySelector(".dur").textContent = `${dur.toFixed(1)}s`;
+  row.classList.add("ended");
+}
 
 async function boot() {
   const port = await invoke("stream_port");
@@ -343,20 +414,38 @@ function fmt(v) {
   return (v ?? 0).toFixed(1);
 }
 
-// Instantaneous signal state only. No timers, no thresholds — that is exactly
-// what fusion is for, and duplicating it here would be a second source of
-// truth. These pills get replaced by Event-driven ones at step 8.
+// Pills reflect fusion's decisions, not raw per-frame signals.
+//
+// They used to be `faces.length === 0` and friends: instantaneous, with no
+// memory, flickering on every dropped detection. That was honest about being
+// raw and useless as a violation display. What lights now has already survived
+// a hold timer and hysteresis in Rust — and this function still decides
+// nothing, it only reads a list of names.
 function drawFlags(snap) {
-  const faces = (snap.signals?.faces || []).length;
-  // Held, for the same reason the boxes are — a pill that blinks once a second
-  // is unreadable. The state that produced it is on the HUD's `slots` line.
-  const objects = lastObjects.detections.length;
+  const active = new Set(snap.active_violations || []);
+  for (const [kind, id] of Object.entries(PILLS)) {
+    const pill = document.getElementById(id);
+    if (pill) pill.classList.toggle("on", active.has(kind));
+  }
   const degraded = sawDegradedEvent || (snap.degraded || []).length > 0;
-
-  el.noFace.classList.toggle("on", snap.seq > 0 && faces === 0);
-  el.multiFace.classList.toggle("on", faces >= 2);
-  el.object.classList.toggle("on", objects > 0);
   el.degraded.classList.toggle("on", degraded);
+
+  el.enrolState.textContent = snap.enrolled ? "enrolled" : "not enrolled";
 }
+
+el.enrol.addEventListener("click", async () => {
+  el.enrol.disabled = true;
+  el.enrol.textContent = "enrolling…";
+  try {
+    await invoke("enrol");
+  } finally {
+    // The worker enrols on its next cycle, up to 5 s away at 0.2 Hz, so the
+    // button re-arms on a timer rather than pretending the work is done.
+    setTimeout(() => {
+      el.enrol.disabled = false;
+      el.enrol.textContent = "Re-enrol face";
+    }, 5500);
+  }
+});
 
 boot();

@@ -1468,3 +1468,191 @@ fine-tuning was started, no model was swapped, no pitch decode was touched, no
 threshold was tuned, and the roughly 50 MB of avoidable bundle weight
 (`detect-cli` and `DirectML.dll` both ship in the installer, and ArcFace is
 bundled but unused) was left alone.
+
+---
+
+## 19. Fusion, and identity — signals become decisions
+
+Everything before this section produced `Signals`: stateless, per-frame, no
+memory. `Violation`, `Event::ViolationStarted` and `Severity` were types with
+no producer. This section builds the producer, and adds the fourth model
+worker.
+
+### 19.1 The constraint that shaped it
+
+`FusionEngine::step` is a **pure function of its arguments**. No clock reads,
+no I/O, no randomness; time arrives as a `t_ms` parameter.
+
+That is not style. Threshold tuning has to run on recordings, because tuning
+that requires re-running models does not get done — and a replay whose output
+drifts between runs cannot be diffed, so no threshold change could ever be
+attributed to the change that caused it. Purity is what makes the recording
+corpus worth having.
+
+One consequence was a type change: `Violation::t_start` was `SystemTime` and is
+now `t_start_ms: u64`, the same session-relative timebase as `Signals::t_ms`. A
+wall clock cannot satisfy the above — the same JSONL replayed twice would carry
+two different sets of timestamps. Session-relative milliseconds are also what a
+reviewer wants ("at 4:12 into the exam", not an absolute instant); the
+wall-clock start belongs on the session report, once.
+
+Measured: **2700 frames of real recorded session replay through fusion in
+87 ms.** That is the tuning loop — edit TOML, re-run, diff.
+
+### 19.2 The rules, and what each one is really guarding against
+
+| Violation | Fires on | The failure it exists to prevent |
+|---|---|---|
+| `NeverSeen` | no face at all, 10 s | CONTEXT.md §18 bug #7 — the old rule was "a face was here and now is not", so a candidate who never appeared produced *nothing* |
+| `NoFace` | absent 2500 ms, clears after 1000 ms present | a flicker mid-absence recording two violations instead of one |
+| `MultipleFaces` | 2+ faces for 2000 ms | — (highest-precision signal there is) |
+| `HeadTurnedAway` | smoothed abs yaw > 30° or pitch > 25° | boundary flapping, via hysteresis |
+| `GazeOffScreen` | smoothed gaze > 25° **after the §18.6 offset** | a blink reading as compliance |
+| `ProhibitedObject` | accumulated bucket evidence ≥ 1.5 | §18.5, both halves — see below |
+| `IdentityMismatch` | 3 consecutive checks below 0.32 | accusing the wrong person on one bad crop |
+| `SignalLost` | pose or gaze absent 5 s | **a system that has gone blind reading as "all clear"** |
+
+Three of those are worth stating at length.
+
+**The object rule carries both §18.5 requirements, and neither was optional.**
+Classes are grouped into config-defined buckets rather than matched as literal
+strings, because the phone was detected but labelled `remote` (0.66) and
+`laptop` (0.545) on frames where it was plainly a phone — a real detection lost
+to a label. `laptop` stays out of `handheld_device` by default: the candidate's
+own machine is in shot for the whole exam. And evidence *accumulates* with a
+3 s half-life rather than being thresholded per sample, because a phone plainly
+in shot cleared 0.5 on only 26–42% of frames. Peaky-but-persistent crosses the
+bar; one loud frame decays without ever reaching it. Both properties are unit
+tested, in both directions.
+
+**`SignalLost` is the false-negative guard.** The soak (§18.3) found pose
+failing on 16 frames and gaze gated on 1.7% — real, and invisible to any
+decision. Without this rule a candidate who covers the camera reads exactly
+like one behaving perfectly. Short gaps are absorbed by the hold timer, so a
+blink is not an incident; five seconds of nothing is. `NotConfigured` is
+deliberately excluded — a slot with no model is a whole-session fact the report
+states once, not something to repeat every five seconds.
+
+**Identity is deliberately slow to accuse.** `consecutive_failures` was raised
+from 2 to **3** — roughly 15 s of sustained mismatch at 0.2 Hz. Two checks is
+~10 s, which sounds close enough and is not: a candidate who leans out of frame
+and back can produce two consecutive bad crops without being a different
+person. Accusing the wrong candidate of impersonation is the worst output this
+system could produce.
+
+### 19.3 Identity: ArcFace as the fourth worker
+
+`w600k_mbf`, 512-d embeddings, its own session and its own bus cursor at
+0.2 Hz. Preprocessing is **ported verbatim** from the previous system's working
+`face_recognition.rs` rather than re-derived: 112×112, RGB, planar NCHW,
+`(px / 127.5) - 1.0`, `input.1` → `516`. Wrong normalisation here does not
+error — it just makes every comparison noise, and the failure looks like
+"identity checking is unreliable" rather than like a bug.
+
+One thing was **added**: the crop is aligned on YuNet's eye keypoints, sized
+from the inter-ocular distance against ArcFace's canonical 112/38 template,
+before resizing. ArcFace is trained on faces normalised to a canonical eye
+position and degrades quietly when they are not — an axis-aligned box means a
+tilted head produces a different embedding for the same person, which reads as
+a drifting cosine score and looks exactly like an impostor.
+
+Enrolment is a request, not an immediate capture: the UI thread has no frame in
+hand and the identity worker is the only thread allowed to touch the session.
+**In memory only.** Persisting a face embedding is a data-protection decision
+with retention and consent attached, not a convenience, and not one to make
+incidentally while wiring a button.
+
+Cost: **nothing measurable.** A 40 s live session with all four workers running
+read **24.64 ms p50 / 29.52 ms p95**, against the §18.3 baseline of 27.03 /
+30.87. Capture held 30.15 fps, detect 14.94 fps. The 0.2 Hz cadence and the
+single-thread budget (§18.2's standing lesson) between them make it free.
+
+### 19.4 What the front end stopped doing
+
+The pills were `faces.length === 0` and friends: instantaneous, no memory,
+flickering on every dropped detection. Honest about being raw, and useless as a
+violation display. They now render `active_violations` — a list of names that
+has already survived a hold timer and hysteresis in Rust. **No threshold, no
+comparison and no severity decision happens in JavaScript**, which remains the
+rule that keeps CONTEXT.md §11 from recurring.
+
+The violation log is built from the edge-triggered `detection:event` stream
+rather than polled, because a violation is a discrete thing that happened at a
+time and a row once written never changes except to gain its duration. Polling
+a growing list thirty times a second to redraw unchanged rows is precisely the
+frame-rate re-render the whole IPC design exists to prevent. A test pins the
+serialised event shape, because if it drifts the front end silently logs
+nothing rather than failing loudly.
+
+"raw signals — not violations" is gone from the panel and the window title. It
+was accurate and no longer is.
+
+### 19.5 Replayed against real footage
+
+The §18.4/§18.6 recording — 2700 frames, 90 s, a phone and deliberate head
+movement — through fusion with default thresholds:
+
+```
+     3.30s  START  prohibited_object  high    handheld_device (evidence 1.69)
+     4.17s  START  gaze_off_screen    medium  gaze yaw 27 deg
+    12.33s  START  gaze_off_screen    medium  gaze yaw 22 deg
+    29.70s  END    prohibited_object          after 26.40s
+    30.30s  START  gaze_off_screen    medium  gaze pitch 46 deg after offset
+    31.03s  START  head_turned_away   medium  head pitch 37 deg
+    75.07s  START  prohibited_object  high    handheld_device (evidence 1.56)
+```
+
+The phone fires at **3.30 s** and **75.07 s**. The two phone windows measured
+by hand in §18.4 were t = 3–13 s and t = 74–80 s. The look-at-lap segment
+measured at 29–32 s produces both a gaze and a head violation at 30.30 s and
+31.03 s. Fusion agrees with the ground truth, on footage it was not tuned
+against.
+
+**Two honest caveats from that same run.**
+
+The phone violation ran 26.4 s against ~10 s of actual phone presence. That
+recording was made with `record`, which runs objects on *every* frame rather
+than at 1 Hz, so evidence accumulated roughly 30× faster than the half-life was
+tuned for and took correspondingly longer to decay. **The accumulator's
+enter/clear thresholds are sensitive to sample rate**, and a recording made at
+one cadence cannot be replayed against thresholds tuned for another without
+accounting for it. Not fixed — recorded, because it is a real property of the
+design and the corpus will have to be recorded at the cadence it is tuned for.
+
+The ceiling-look at 38–40 s (pose pitch +40 to +58) did **not** raise
+`HeadTurnedAway`. The face detector lost the face on roughly half those frames
+at that extreme tilt, so the condition never persisted the 1500 ms hold
+continuously. Whether that is the hold being too long or the face detector's
+limit at extreme pitch is not established here.
+
+### 19.6 Deferred, and recorded as deferred
+
+- **Scored co-occurrence severity.** MODELS.md §4 argues for a weighted fused
+  score, and it is right — independent booleans produce independent
+  false-positive streams. Severity is a per-rule constant from `Config`
+  instead. That is a deferral, not a disagreement: weights invented without a
+  corpus to tune them against would look like evidence while being guesses.
+- **`EyesAverted`** — eye-in-head as its own violation. The signal is measured,
+  validated (§18.6) and on the HUD; nothing decides on it yet.
+- **Corpus-based tuning.** The defaults in `Config` are starting points and
+  will be wrong. The deliverable is not the numbers, it is that changing them
+  is a TOML edit and an 87 ms re-run.
+- **Calibration UI**, and persisting enrolment.
+- The `debug_directions` readout still computes its own bucketing in
+  `direction.rs` rather than being driven from fusion state. Two sources of
+  truth for "which way is he looking", which is exactly the shape of problem
+  this codebase keeps trying not to have. It should be re-driven from fusion
+  and was left alone here to keep the diff honest.
+
+### 19.7 Two things this section changed that were not asked for
+
+Both were config defaults that the new rules made wrong rather than merely
+untuned, and both are the kind of quiet mistake that only shows up as a
+violation that never fires:
+
+- Gaze thresholds moved from radians to **degrees** (`yaw_enter_rad` →
+  `yaw_enter_deg`). Everything that tunes them — §18.6's measurements, the
+  pitch offset, the head-square band — is quoted in degrees, and a tuning file
+  holding `0.436` where the evidence says `25` is how a unit mismatch survives
+  review. Radians now exist only on the wire, converted once on ingest.
+- `identity.consecutive_failures` 2 → 3, for the reason in §19.2.

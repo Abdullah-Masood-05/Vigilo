@@ -61,6 +61,15 @@ struct SnapshotDto {
     /// label disagreeing with the video is diagnosable rather than a guess —
     /// see [`preview::MIRRORED`].
     preview_mirrored: bool,
+    /// Violations fusion currently has raised, by their `as_str` names.
+    ///
+    /// Level-triggered, for the pills. The scrolling log is built from the
+    /// edge-triggered `detection:event` stream instead — polling a growing
+    /// list every 33 ms to redraw rows that have not changed is the shape of
+    /// the bug the whole IPC design exists to avoid.
+    active_violations: Vec<String>,
+    /// Whether a reference face has been enrolled this session.
+    enrolled: bool,
 }
 
 #[tauri::command]
@@ -105,6 +114,28 @@ fn snapshot(state: State<ViewerState>) -> SnapshotDto {
         degraded: detector_state.degraded.iter().map(|d| format!("{d:?}")).collect(),
         error: detector.error().or_else(|| state.startup_error.clone()),
         preview_mirrored: preview::MIRRORED,
+        active_violations: detector_state
+            .active_violations
+            .iter()
+            .map(|v| v.as_str().to_string())
+            .collect(),
+        enrolled: detector.is_enrolled(),
+    }
+}
+
+/// Capture the next usable face as the identity reference.
+///
+/// In memory only, for this process. Persisting a face embedding is a data
+/// protection decision with retention and consent attached, not a convenience
+/// — it is not one to make incidentally while wiring a button.
+#[tauri::command]
+fn enrol(state: State<ViewerState>) -> bool {
+    match state.detector.as_ref() {
+        Some(detector) => {
+            detector.enrol();
+            true
+        }
+        None => false,
     }
 }
 
@@ -177,7 +208,7 @@ fn main() {
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![stream_port, snapshot])
+        .invoke_handler(tauri::generate_handler![stream_port, snapshot, enrol])
         .run(tauri::generate_context!())
         .expect("error while running viewer");
 }

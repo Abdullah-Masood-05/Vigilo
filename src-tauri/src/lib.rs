@@ -39,6 +39,7 @@ pub mod capture;
 pub mod config;
 pub mod direction;
 pub mod error;
+pub mod fusion;
 pub mod models;
 pub mod pipeline;
 pub mod preview;

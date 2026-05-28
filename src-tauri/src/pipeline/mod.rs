@@ -27,6 +27,7 @@ use crate::config::Config;
 use crate::error::{DetectError, Result};
 use crate::models::face::YuNet;
 use crate::models::gaze::GazeNet;
+use crate::models::identity::ArcFace;
 use crate::models::objects::YoloxNano;
 use crate::models::pose::HeadPoseNet;
 use crate::report::{FrameStats, Latencies, SessionReport, SignalStatus};
@@ -82,6 +83,25 @@ pub(crate) struct Shared {
     /// Newest object result, published by the object worker and read by the
     /// face worker when it assembles `Signals`. Lock-free on the read side.
     objects: ArcSwap<ObjectResult>,
+    /// Newest identity result, same attach-once contract as `objects`.
+    identity: ArcSwap<IdentityResult>,
+
+    /// The enrolled reference embedding. `None` until someone enrols.
+    ///
+    /// In memory only, on purpose: persisting a face embedding is a data
+    /// protection decision with retention and consent attached, not a
+    /// convenience, and it is not one to make incidentally while wiring a
+    /// worker. Enrolment lasts as long as the process.
+    enrolled: Mutex<Option<Vec<f32>>>,
+    /// Set by [`Detector::enrol`]; cleared by the identity worker once it has
+    /// captured a usable face.
+    enrol_request: AtomicBool,
+
+    /// Violations currently raised, for the polled snapshot.
+    active_violations: Mutex<Vec<(crate::types::ViolationKind, Option<String>)>>,
+    /// Every violation this session, closed ones included. Feeds the viewer's
+    /// log and the session report.
+    violation_log: Mutex<Vec<crate::types::Violation>>,
 
     error: Mutex<Option<String>>,
     degraded: Mutex<Vec<DegradeReason>>,
@@ -102,6 +122,15 @@ pub(crate) struct ObjectResult {
     state: SlotState,
 }
 
+/// One identity check, tagged with the frame it ran on.
+#[derive(Default)]
+pub(crate) struct IdentityResult {
+    /// Cosine similarity against the enrolled embedding.
+    score: Option<f32>,
+    seq: u64,
+    state: SlotState,
+}
+
 impl Shared {
     fn new(events: Sender<Event>) -> Self {
         Self {
@@ -119,6 +148,11 @@ impl Shared {
             total_latency: Mutex::new(Latencies::rolling(LATENCY_WINDOW)),
             object_latency: Mutex::new(Latencies::rolling(LATENCY_WINDOW)),
             objects: ArcSwap::from_pointee(ObjectResult::default()),
+            identity: ArcSwap::from_pointee(IdentityResult::default()),
+            enrolled: Mutex::new(None),
+            enrol_request: AtomicBool::new(false),
+            active_violations: Mutex::new(Vec::new()),
+            violation_log: Mutex::new(Vec::new()),
             error: Mutex::new(None),
             degraded: Mutex::new(Vec::new()),
         }
@@ -171,6 +205,36 @@ impl Shared {
             state => {
                 *cursor = result.seq;
                 (result.detections.clone(), state)
+            }
+        }
+    }
+
+    /// Mark identity as configured but not yet enrolled. Until an enrolment
+    /// happens there is nothing to compare against, which is `NotConfigured`
+    /// rather than a failure — the distinction fusion needs so an unenrolled
+    /// session does not read as a passing one.
+    fn arm_identity(&self) {
+        self.identity.store(Arc::new(IdentityResult {
+            state: SlotState::NotConfigured,
+            ..Default::default()
+        }));
+    }
+
+    fn publish_identity(&self, score: Option<f32>, seq: u64, state: SlotState) {
+        self.identity.store(Arc::new(IdentityResult { score, seq, state }));
+    }
+
+    /// Same attach-once-then-consume contract as [`Shared::take_new_objects`]:
+    /// at 0.2 Hz against a 15 Hz worker, requiring an exact sequence match
+    /// would discard almost every result.
+    fn take_new_identity(&self, cursor: &mut u64) -> (Option<f32>, SlotState) {
+        let result = self.identity.load();
+        match result.state {
+            SlotState::NotConfigured => (None, SlotState::NotConfigured),
+            _ if result.seq == 0 || result.seq <= *cursor => (None, SlotState::SkippedCadence),
+            state => {
+                *cursor = result.seq;
+                (result.score, state)
             }
         }
     }
@@ -341,6 +405,24 @@ impl Detector {
             None => None,
         };
 
+        let identity = match self.config.models.identity.clone() {
+            Some(path) => match ArcFace::load(&path, &self.config) {
+                Ok(model) => {
+                    tracing::info!(model = %path.display(), "identity model ready");
+                    Some(model)
+                }
+                Err(e) => {
+                    tracing::warn!(error = %e, "identity unavailable; continuing without it");
+                    self.shared.note_degraded(DegradeReason::ModelUnavailable {
+                        model: "identity".into(),
+                        why: e.to_string(),
+                    });
+                    None
+                }
+            },
+            None => None,
+        };
+
         let shared = Arc::clone(&self.shared);
         let cfg = self.config.clone();
         let events = self.shared.events.clone();
@@ -364,6 +446,21 @@ impl Detector {
             self.threads.push(handle);
         }
 
+        // Identity is the fourth worker and the slowest: its own session, its
+        // own cursor over the frame bus, 0.2 Hz. Same rule as every other
+        // model here — one session owned by exactly one thread, no
+        // `Mutex<Session>` anywhere in the inference path.
+        if let Some(model) = identity {
+            self.shared.arm_identity();
+            let shared = Arc::clone(&self.shared);
+            let cfg = self.config.clone();
+            let handle = std::thread::Builder::new()
+                .name("ds-identity".into())
+                .spawn(move || workers::identity_loop(model, cfg, shared))
+                .map_err(|e| DetectError::Config(format!("spawning identity thread: {e}")))?;
+            self.threads.push(handle);
+        }
+
         Ok(())
     }
 
@@ -374,11 +471,7 @@ impl Detector {
         }
     }
 
-    /// Low-rate stream of decisions.
-    ///
-    /// Empty until fusion arrives at step 8 — apart from degradation events,
-    /// which are real today. Consumers should be written against this now:
-    /// nothing about the channel changes when violations start flowing.
+    /// Low-rate stream of decisions. Fusion is its producer.
     pub fn events(&self) -> Receiver<Event> {
         self.events_rx.clone()
     }
@@ -397,13 +490,38 @@ impl Detector {
                 head_pose: d.signals.head_pose,
                 gaze: d.signals.gaze,
                 identity_match: d.signals.identity_match,
-                active_violations: Vec::new(), // fusion, step 8
+                active_violations: self
+                    .shared
+                    .active_violations
+                    .lock()
+                    .map(|v| v.iter().map(|(k, _)| *k).collect())
+                    .unwrap_or_default(),
                 degraded,
                 calibrated: false,
                 stats: self.shared.stats(),
             },
             None => DetectorState { degraded, stats: self.shared.stats(), ..Default::default() },
         }
+    }
+
+    /// Capture the next usable face as the identity reference.
+    ///
+    /// Deliberately a request rather than an immediate capture: the caller is
+    /// a UI thread that has no frame in hand, and the identity worker is the
+    /// only thread allowed to touch the session. It enrols on its next cycle
+    /// with a face present.
+    pub fn enrol(&self) {
+        self.shared.enrol_request.store(true, Ordering::Relaxed);
+    }
+
+    /// Whether a reference embedding exists.
+    pub fn is_enrolled(&self) -> bool {
+        self.shared.enrolled.lock().map(|e| e.is_some()).unwrap_or(false)
+    }
+
+    /// Every violation this session, closed ones included.
+    pub fn violations(&self) -> Vec<crate::types::Violation> {
+        self.shared.violation_log.lock().map(|v| v.clone()).unwrap_or_default()
     }
 
     /// The most recent frame **and** the signals derived from it, as one unit.

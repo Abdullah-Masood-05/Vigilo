@@ -6,11 +6,13 @@
 //! that. Defaults are seeded from `CONTEXT.md`'s measured numbers, corrected
 //! per MODELS.md §4 where the old value was known to be wrong.
 
+use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use serde::{Deserialize, Serialize};
 
 use crate::error::{DetectError, Result};
+use crate::types::Severity;
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 #[serde(default)]
@@ -50,8 +52,27 @@ impl Config {
         // violation latches on and never clears.
         check_hysteresis("pose.yaw", t.pose.yaw_enter_deg, t.pose.yaw_exit_deg)?;
         check_hysteresis("pose.pitch", t.pose.pitch_enter_deg, t.pose.pitch_exit_deg)?;
-        check_hysteresis("gaze.yaw", t.gaze.yaw_enter_rad, t.gaze.yaw_exit_rad)?;
-        check_hysteresis("gaze.pitch", t.gaze.pitch_enter_rad, t.gaze.pitch_exit_rad)?;
+        check_hysteresis("gaze.yaw", t.gaze.yaw_enter_deg, t.gaze.yaw_exit_deg)?;
+        check_hysteresis("gaze.pitch", t.gaze.pitch_enter_deg, t.gaze.pitch_exit_deg)?;
+        check_hysteresis("objects.score", t.objects.enter_score, t.objects.clear_score)?;
+
+        // A bucket naming a class the detector can never emit is a threshold
+        // that silently never fires — the quietest possible failure.
+        for (name, bucket) in &t.objects.buckets {
+            if bucket.classes.is_empty() {
+                return Err(DetectError::Config(format!(
+                    "objects.buckets.{name} lists no classes, so it can never fire"
+                )));
+            }
+            for class in &bucket.classes {
+                if !crate::models::objects::COCO_CLASSES.contains(&class.as_str()) {
+                    return Err(DetectError::Config(format!(
+                        "objects.buckets.{name} lists \"{class}\", which is not a COCO class \
+                         this model can produce"
+                    )));
+                }
+            }
+        }
         check_hysteresis(
             "debug_direction",
             t.debug_direction.enter_deg,
@@ -228,7 +249,7 @@ pub struct Thresholds {
     pub gaze: GazeThresholds,
     pub objects: ObjectThresholds,
     pub identity: IdentityThresholds,
-    pub fusion: FusionWeights,
+    pub fusion: FusionConfig,
     pub debug_direction: DebugDirectionThresholds,
 }
 
@@ -319,10 +340,10 @@ pub struct PoseThresholds {
 impl Default for PoseThresholds {
     fn default() -> Self {
         Self {
-            yaw_enter_deg: 25.0,
-            yaw_exit_deg: 18.0,
-            pitch_enter_deg: 20.0,
-            pitch_exit_deg: 14.0,
+            yaw_enter_deg: 30.0,
+            yaw_exit_deg: 22.0,
+            pitch_enter_deg: 25.0,
+            pitch_exit_deg: 18.0,
             hold_ms: 1500,
             clear_ms: 700,
             ema_alpha: 0.35,
@@ -341,10 +362,28 @@ pub struct GazeThresholds {
     pub calibration_variance_ceiling: f64,
     /// Widen thresholds proportionally for noisy setups.
     pub variance_widening: f64,
-    pub yaw_enter_rad: f64,
-    pub yaw_exit_rad: f64,
-    pub pitch_enter_rad: f64,
-    pub pitch_exit_rad: f64,
+    /// Combined-gaze bounds, **in degrees and after `pitch_offset_deg` is
+    /// applied**.
+    ///
+    /// These were radians until fusion landed. Everything that tunes them —
+    /// §18.6's measurements, the pitch offset below, the head-square band —
+    /// is quoted in degrees, and a tuning file holding `0.436` where the
+    /// evidence says `25` is how a unit mismatch survives review. One unit,
+    /// converted once on ingest from `Gaze`, which is the only place radians
+    /// exist.
+    pub yaw_enter_deg: f64,
+    pub yaw_exit_deg: f64,
+    pub pitch_enter_deg: f64,
+    pub pitch_exit_deg: f64,
+    /// Subtracted from raw gaze pitch and eye pitch before any threshold.
+    ///
+    /// §18.6 measured a systematic **+12 to +15°** offset: sitting square at
+    /// the screen, gaze pitch idles around +8 to +16 rather than near zero,
+    /// because the camera sits above the screen. The sign and the separation
+    /// are both correct — down reads −25, up reads +18 — so this is a frame-of
+    /// -reference constant, not a decode fix. Phase 6 calibration measures it
+    /// per user; until then it is one number here.
+    pub pitch_offset_deg: f64,
     pub hold_ms: u64,
     pub clear_ms: u64,
     /// Below this EAR the eyes are closing — suppress gaze rather than
@@ -365,14 +404,15 @@ impl Default for GazeThresholds {
             calibration_min_samples: 30,
             calibration_variance_ceiling: 0.02,
             variance_widening: 1.5,
-            yaw_enter_rad: 0.38,
-            yaw_exit_rad: 0.26,
-            pitch_enter_rad: 0.33,
-            pitch_exit_rad: 0.22,
+            yaw_enter_deg: 25.0,
+            yaw_exit_deg: 18.0,
+            pitch_enter_deg: 25.0,
+            pitch_exit_deg: 18.0,
+            pitch_offset_deg: 12.5,
             hold_ms: 1000,
             clear_ms: 500,
             blink_ear_floor: 0.18,
-            ema_alpha: 0.4,
+            ema_alpha: 0.3,
             min_face_score: 0.5,
         }
     }
@@ -399,18 +439,65 @@ pub struct ObjectThresholds {
     /// Objects are detected independently of face presence. A phone held over
     /// the face is exactly the case the old gating discarded (MODELS.md §4).
     pub require_face_present: bool,
+    /// COCO classes grouped into the things a proctor actually cares about.
+    ///
+    /// §18.5: the phone was detected but labelled `remote` (0.66) and `laptop`
+    /// (0.545) on frames where it was plainly a phone. Matching `allowlist` as
+    /// literal strings threw those away — a real detection lost to a label.
+    /// Confusion between visually similar COCO classes is expected; a bucket
+    /// absorbs it, a string comparison turns it into a false negative.
+    ///
+    /// `laptop` is deliberately **not** in `handheld_device`: the candidate's
+    /// own machine is in shot for the whole exam and would fire continuously.
+    /// It stays arguable without a recompile because this is config.
+    pub buckets: BTreeMap<String, ObjectBucket>,
+    /// Accumulated-score threshold at which a bucket becomes a violation, and
+    /// the level it must fall back through to clear.
+    ///
+    /// §18.5: only 26–42% of frames cleared 0.5 with a phone plainly in shot,
+    /// so a per-sample threshold misses half the seconds it is there. Evidence
+    /// accumulates instead — see [`ObjectThresholds::score_half_life_ms`].
+    pub enter_score: f64,
+    pub clear_score: f64,
+    /// How long an accumulated point of evidence takes to decay by half.
+    ///
+    /// This is what separates "peaky but persistent" from "one noisy frame":
+    /// a phone sampled at 1 Hz keeps topping the score up faster than it
+    /// decays, while a single 0.3 detection fades before it can reach
+    /// `enter_score`.
+    pub score_half_life_ms: u64,
+}
+
+/// One named group of COCO classes judged together.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ObjectBucket {
+    pub classes: Vec<String>,
 }
 
 impl Default for ObjectThresholds {
     fn default() -> Self {
+        let bucket = |classes: &[&str]| ObjectBucket {
+            classes: classes.iter().map(|s| s.to_string()).collect(),
+        };
         Self {
-            min_score: 0.4,
+            // Lowered from 0.4 for fusion's benefit: this is now the floor at
+            // which a sample is worth *accumulating*, not the bar at which it
+            // is worth believing on its own. The bar is `enter_score`.
+            min_score: 0.25,
             nms_threshold: 0.45,
             hold_ms: 2000,
             clear_ms: 1000,
             allowlist: ["cell phone", "book"].iter().map(|s| s.to_string()).collect(),
             person_count: 2,
             require_face_present: false,
+            buckets: BTreeMap::from([
+                ("handheld_device".to_string(), bucket(&["cell phone", "remote"])),
+                ("book".to_string(), bucket(&["book"])),
+            ]),
+            enter_score: 1.5,
+            clear_score: 0.6,
+            score_half_life_ms: 3000,
         }
     }
 }
@@ -428,41 +515,66 @@ pub struct IdentityThresholds {
 
 impl Default for IdentityThresholds {
     fn default() -> Self {
-        Self { cosine_enter: 0.32, cosine_exit: 0.42, consecutive_failures: 2 }
+        // Three, not two. At 0.2 Hz that is ~15 s of sustained mismatch before
+        // anything is claimed. Two checks is ~10 s, which sounds close enough
+        // and is not: a candidate who leans out of frame and back can produce
+        // two consecutive bad crops without ever being a different person, and
+        // accusing the wrong candidate of impersonation is the worst output
+        // this system has.
+        Self { cosine_enter: 0.32, cosine_exit: 0.42, consecutive_failures: 3 }
     }
 }
 
-/// Fuse, don't OR (MODELS.md §4). Five independent booleans produce five
-/// independent false-positive streams; a weighted score with the contributing
-/// signals attached is both stronger evidence and reviewable.
+/// Fusion's own numbers: how long a lost signal must stay lost, and how
+/// serious each violation is.
+///
+/// **Severity is a per-rule constant here, deliberately.** MODELS.md §4 argues
+/// for a weighted fused score with co-occurrence escalation, and that is the
+/// right end state — five independent booleans produce five independent
+/// false-positive streams. It is deferred rather than done: scoring is only
+/// worth building once there is a corpus to tune it against, and a per-rule
+/// constant is honest in the meantime in a way a weighted score with invented
+/// weights would not be.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
-pub struct FusionWeights {
-    pub no_face: f64,
-    pub never_seen: f64,
-    pub multiple_faces: f64,
-    pub head_turned: f64,
-    pub gaze_off: f64,
-    pub prohibited_object: f64,
-    pub identity_drift: f64,
-    /// Score at or above which a fused violation is escalated to High.
-    pub high_severity_score: f64,
-    /// ...and to Critical.
-    pub critical_severity_score: f64,
+pub struct FusionConfig {
+    /// How long pose or gaze must be absent (`Gated`/`Failed`) before that
+    /// absence is itself reported.
+    ///
+    /// The soak (§18.3) measured `pose failed 16` and gaze gated 1.7% — real,
+    /// and invisible to any decision until now. A blink or one failed frame is
+    /// absorbed; a covered camera or a wedged model is not. A proctoring
+    /// system that has gone blind must say so, because "no signal" read as
+    /// "no violation" is the false negative that matters most.
+    pub signal_lost_ms: u64,
+    pub signal_lost_clear_ms: u64,
+    /// Severity per violation kind, keyed by [`crate::types::ViolationKind::as_str`].
+    /// Anything missing from the map is `Medium`.
+    pub severity: BTreeMap<String, Severity>,
 }
 
-impl Default for FusionWeights {
+impl Default for FusionConfig {
     fn default() -> Self {
+        use Severity::*;
         Self {
-            no_face: 0.6,
-            never_seen: 0.9,
-            multiple_faces: 1.0,
-            head_turned: 0.5,
-            gaze_off: 0.45,
-            prohibited_object: 0.9,
-            identity_drift: 1.0,
-            high_severity_score: 1.2,
-            critical_severity_score: 1.8,
+            signal_lost_ms: 5000,
+            signal_lost_clear_ms: 1500,
+            severity: BTreeMap::from([
+                // Nobody ever appeared: the session is worthless and no other
+                // signal can be trusted, so it outranks an ordinary absence.
+                ("never_seen".to_string(), Critical),
+                ("no_face".to_string(), High),
+                // The highest-precision signal there is — a second face is
+                // either there or it is not.
+                ("multiple_faces".to_string(), Critical),
+                ("head_turned_away".to_string(), Medium),
+                ("gaze_off_screen".to_string(), Medium),
+                ("prohibited_object".to_string(), High),
+                ("identity_mismatch".to_string(), Critical),
+                // Not the candidate's fault, but the stretch it covers is
+                // unproctored, which a reviewer must see.
+                ("signal_lost".to_string(), High),
+            ]),
         }
     }
 }
@@ -566,9 +678,9 @@ mod tests {
     #[test]
     fn partial_toml_fills_the_rest_from_defaults() {
         // Tuning a single number must not require restating the whole file.
-        let cfg: Config = toml::from_str("[thresholds.pose]\nyaw_enter_deg = 30.0\n").unwrap();
-        assert_eq!(cfg.thresholds.pose.yaw_enter_deg, 30.0);
-        assert_eq!(cfg.thresholds.pose.yaw_exit_deg, 18.0);
+        let cfg: Config = toml::from_str("[thresholds.pose]\nyaw_enter_deg = 35.0\n").unwrap();
+        assert_eq!(cfg.thresholds.pose.yaw_enter_deg, 35.0);
+        assert_eq!(cfg.thresholds.pose.yaw_exit_deg, 22.0);
         assert_eq!(cfg.capture.width, 1280);
     }
 
