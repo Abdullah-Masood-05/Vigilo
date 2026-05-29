@@ -15,6 +15,50 @@ use crate::config::CaptureConfig;
 use crate::error::{DetectError, Result};
 use crate::types::Frame;
 
+/// Is ffmpeg reachable on `PATH`?
+///
+/// Every source except `dir:` shells out to ffmpeg, so its absence is not a
+/// capture bug — it is a missing prerequisite, and the two need completely
+/// different messages. Without this check the first thing a new user sees is a
+/// DirectShow error over a black window, which tells them nothing they can act
+/// on.
+///
+/// Checked before the pipeline starts rather than on first frame, so the app
+/// can say what is wrong instead of appearing to work and then not.
+pub fn ffmpeg_available() -> bool {
+    binary_runs("ffmpeg") && binary_runs("ffprobe")
+}
+
+fn binary_runs(name: &str) -> bool {
+    std::process::Command::new(name)
+        .arg("-version")
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::null())
+        .stdin(std::process::Stdio::null())
+        .status()
+        .is_ok()
+}
+
+/// What to tell someone who does not have it.
+///
+/// Lives here, next to the check, rather than in the UI layer: the fact that
+/// this app needs ffmpeg is a property of the capture implementation, and when
+/// capture stops shelling out this string should disappear with it.
+pub const FFMPEG_MISSING_HELP: &str = "\
+This app needs a free tool called ffmpeg to read your webcam, and it is not \
+installed yet.
+
+To install it, open the Start menu, type \"Terminal\" or \"PowerShell\", open \
+it, then copy and paste this line and press Enter:
+
+    winget install --id Gyan.FFmpeg -e
+
+If that does not work, download it from https://www.gyan.dev/ffmpeg/builds/ \
+(choose \"release essentials\"), unzip it, and add its \"bin\" folder to your \
+PATH.
+
+When it has finished installing, close this app and open it again.";
+
 pub trait FrameSource: Send {
     /// `Ok(None)` means the source is exhausted — end of file, end of
     /// directory. A live camera never returns `None`; it blocks.

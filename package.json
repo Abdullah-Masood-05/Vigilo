@@ -1,0 +1,14 @@
+{
+  "name": "deepscreen-viewer",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Exam proctoring desktop app. This manifest exists only to install the Tauri CLI — the front end has no dependencies and no build step.",
+  "scripts": {
+    "dev": "tauri dev",
+    "build": "tauri build",
+    "tauri": "tauri"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "^2.1.0"
+  }
+}

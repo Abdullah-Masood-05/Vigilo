@@ -6,166 +6,215 @@
 [![Frontend](https://img.shields.io/badge/frontend-vanilla%20JS-F7DF1E?logo=javascript&logoColor=black)](dist/)
 [![Licence](https://img.shields.io/badge/licence-MIT-blue)](LICENSE)
 
-The desktop application for exam proctoring: opens, turns the camera on, and
-shows the live feed with face boxes, a head-pose gizmo, a gaze ray and a
-signals HUD.
+Webcam proctoring for online exams. Opens, turns the camera on, and watches for
+the things that matter: nobody in frame, two people in frame, a phone in shot,
+a head turned away, eyes off the screen, and whether the person sitting there
+is still the person who enrolled.
 
-One project. The detection code — models, threading, decisions — lives in
-`src-tauri/src/lib.rs` and the modules beside it, and knows nothing about
-`tauri`: no window, no IPC, no webview import anywhere in it. `tauri::` is used
-only in `main.rs` and its two `#[tauri::command]` handlers. That boundary used
-to be enforced by a second crate (`deepscreen-detect`, now archived); it is
-enforced by module discipline instead, and `cargo test` still runs the
-detection code with no window and no camera to prove it.
+It reports **violations**, not raw signals — each one has to survive a hold
+timer and hysteresis before it appears, so a dropped frame or a blink does not
+produce an alert.
 
-The lib still has its own front door for exactly that: a `detect-cli` binary
-that runs the models from a terminal, against a webcam or a recorded clip, with
-no app and no window. It is what caught the INT8 slowdown, three wrong tensor
-shapes, and a latency figure that turned out to be measured with no face in
-frame — bugs a GUI would have hidden behind "looks fine."
-
-## Screenshot
-
-The HUD reports capture and detection rates separately, because they are
-separate threads and the gap between them is the interesting number:
-
-```
-camera:0
-cap 30.2 fps   det 14.9 fps   skipped 231
-detect  p50 5.9 ms   p95 8.0 ms
-preview p50 5.0 ms
-faces 1   objects 0   seq 455
-pose    yaw +2.0  pitch -17.2  roll -17.0
-gaze    yaw -4.1  pitch -9.6
-eye     yaw -6.1  pitch +7.6
-```
-
-## No frames cross the IPC boundary
-
-This is the one design decision worth explaining, because the obvious approach
-is a trap.
-
-The previous implementation base64-encoded a JPEG in JavaScript and invoked a
-Rust command with it every 300 ms. That is tolerable at 3 Hz and hopeless at
-frame rate: base64 inflates by a third on top of an encode and a decode, all on
-the UI thread, every frame.
-
-Instead a preview thread downscales to 640×360, JPEG-encodes at quality 70, and
-publishes into a lock-free slot. A `tiny_http` server bound to `127.0.0.1` on
-an ephemeral port serves `multipart/x-mixed-replace`, and the front end is:
-
-```html
-<img src="http://127.0.0.1:PORT/stream">
-```
-
-The browser decodes and paints every frame with **zero JavaScript in the loop**.
-The only thing crossing the Tauri boundary is a few hundred bytes of JSON per
-poll — the signals and the stats, never pixels.
-
-Measured: 5.0 ms to encode a preview frame, ~18 KB per frame, ~290 KB/s over
-loopback, and the detection thread's p50 is unchanged whether the preview is
-running or not.
-
-Boxes are an SVG layer positioned over the `<img>`, with `viewBox` set to the
-source resolution. Signal coordinates go in unmodified and the browser does the
-scaling — no scale factors are computed in JavaScript, and nothing is
-rasterised into the JPEG.
-
-## No framework
-
-Plain HTML, one CSS file, one JS file, no bundler, no npm, no build step. The
-whole front end is under 500 lines.
-
-The previous version's worst bug was frame-rate React re-renders. The most
-reliable way not to have that bug is not to have a renderer capable of it. This
-also means `cargo run` is the entire dev loop — there is no dev server to start
-and nothing to watch for changes.
-
-**No detection or decision logic lives in JavaScript.** No thresholds, no hold
-timers, no hysteresis, no smoothing. The front end renders what the library
-sends and computes nothing. Duplicating a threshold into the UI is how the
-previous system ended up with the same constant defined in three places with
-three different values.
-
-## Running it
-
-Clone this one repository. Nothing else is required to build it:
+## Quick start
 
 ```bash
 git clone https://github.com/Abdullah-Masood-05/deepscreen-viewer
+cd deepscreen-viewer
+
+bun install          # installs the Tauri CLI (see "About bun" below)
+# then download the models — see "Models", it is four curl commands
+
+bun run dev          # run it
+bun run build        # build installers
 ```
 
+If you would rather not use bun, everything works through cargo alone:
+
 ```bash
-# once — fetch the model weights (see "Models" below)
 cd src-tauri
-cargo run --release                                    # camera:0
-cargo run --release -- --source file:../clip.mp4       # a recorded clip
-cargo run --release -- --source camera:1 --config dev.toml
-
-# the detection code from a terminal, no window, no camera required for most of it
-cargo run --release --bin detect-cli -- devices
-cargo run --release --bin detect-cli -- inspect ../models/*.onnx
+cargo run --release
+cargo tauri build            # needs: cargo install tauri-cli --version "^2"
 ```
 
-`cargo tauri dev` also works if you have the Tauri CLI, but it is not required.
+### About bun
 
-To build an installer:
+`package.json` exists **only** to install the Tauri CLI. The front end has no
+dependencies, no bundler and no build step — it is one HTML file, one CSS file
+and one JS file, served as-is. `bun install` will not pull in a framework
+because there is nothing to pull in.
 
-```bash
-cargo tauri build
-```
-
-produces an MSI and an NSIS installer with the models bundled as resources. The
-resulting `.exe` resolves them through Tauri's resource directory and runs from
-anywhere.
-
-## Models
-
-Weights are **not committed**. Put them in `models/` at the repository root
-before building — `cargo tauri build` bundles whatever is there:
-
-```bash
-mkdir -p models && cd models
-curl -LO https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
-curl -LO https://github.com/yakhyo/head-pose-estimation/releases/download/weights/mobilenetv3_small.onnx
-mv mobilenetv3_small.onnx headpose_mobilenetv3_small.onnx
-curl -LO https://github.com/yakhyo/gaze-estimation/releases/download/weights/mobileone_s0_gaze.onnx
-curl -LO https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_nano.onnx
-```
-
-| Slot | Source | Licence |
-|---|---|---|
-| Face | [opencv/opencv_zoo — YuNet](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) | MIT |
-| Head pose | [yakhyo/head-pose-estimation](https://github.com/yakhyo/head-pose-estimation) | MIT |
-| Gaze | [yakhyo/gaze-estimation](https://github.com/yakhyo/gaze-estimation) | MIT |
-| Objects | [Megvii-BaseDetection/YOLOX](https://github.com/Megvii-BaseDetection/YOLOX) | Apache 2.0 |
-
-Ultralytics' YOLO26n is deliberately **not** used. It is AGPL-3.0, which would
-require open-sourcing anything shipping it; YOLOX-Nano is Apache 2.0 and also
-measured 2.7× faster on this hardware.
+If you have npm or pnpm instead, they work identically (`npm install`,
+`npm run dev`). Bun is a convenience, not a requirement.
 
 ## Requirements
 
-- Rust 1.97+, WebView2 (present on Windows 10/11 by default)
-- **ffmpeg and ffprobe on `PATH`** — the camera is currently driven through
-  ffmpeg's DirectShow input. Replacing this with a native capture crate is
-  planned and is what a fully self-contained installer needs.
+| | Why | How to get it |
+|---|---|---|
+| **Rust 1.97+** | builds the app | [rustup.rs](https://rustup.rs) |
+| **ffmpeg + ffprobe on `PATH`** | **required** — the camera is read through ffmpeg's DirectShow input | `winget install --id Gyan.FFmpeg -e` |
+| WebView2 | renders the UI | preinstalled on Windows 10/11 |
+| bun *(optional)* | installs the Tauri CLI | [bun.sh](https://bun.sh) |
+
+**ffmpeg is not optional and is not bundled.** If it is missing the app opens
+and shows a full-screen instruction telling you how to install it, rather than
+a black window — but it will not capture until you do. Replacing the ffmpeg
+subprocess with a native capture crate is the main thing standing between this
+and a genuinely self-contained installer.
 
 Only one process may own a webcam on Windows. If OBS, Teams, Zoom, Discord or a
-browser tab is holding it, the app fails with a clear message naming the likely
-cause rather than a DirectShow error code.
+browser tab is holding it, the app names the likely cause rather than showing a
+DirectShow error code.
 
-## What is not built yet
+## Models
 
-Honest list, since the HUD makes it look further along than it is:
+Weights are **not committed** — they are 27 MB and carry their own licences.
+Put them in `models/` at the repository root before building; `bun run build`
+bundles whatever is there into the installer.
 
-- **Fusion.** The flag pills reflect instantaneous signal state — `NO FACE` is
-  literally `faces.is_empty()`. There are no hold timers, no hysteresis and no
-  violations yet. The UI labels this "raw signals — not violations" precisely
-  so it is not mistaken for a verdict.
-- **Identity checking.** ArcFace is bundled but no enrolment flow exists.
-- **Calibration and liveness.**
-- **Session reports.**
+```bash
+mkdir -p models && cd models
+
+# Face detection — YuNet, MIT
+curl -LO https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
+
+# Head pose — MIT
+curl -LO https://github.com/yakhyo/head-pose-estimation/releases/download/weights/mobilenetv3_small.onnx
+mv mobilenetv3_small.onnx headpose_mobilenetv3_small.onnx
+
+# Gaze + eye-in-head — MobileGaze, MIT
+curl -LO https://github.com/yakhyo/gaze-estimation/releases/download/weights/mobileone_s0_gaze.onnx
+
+# Prohibited objects — YOLOX-Nano, Apache 2.0
+curl -LO https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_nano.onnx
+
+# Identity — ArcFace w600k_mbf, from InsightFace's buffalo_sc pack
+curl -LO https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip
+unzip -j buffalo_sc.zip w600k_mbf.onnx && rm buffalo_sc.zip
+```
+
+You should end up with exactly these five files:
+
+| File | Slot | Size | Licence |
+|---|---|---|---|
+| `face_detection_yunet_2023mar.onnx` | face + 5 keypoints | 0.2 MB | [MIT](https://github.com/opencv/opencv_zoo/tree/main/models/face_detection_yunet) |
+| `headpose_mobilenetv3_small.onnx` | head pose | 5.8 MB | [MIT](https://github.com/yakhyo/head-pose-estimation) |
+| `mobileone_s0_gaze.onnx` | gaze + eye-in-head | 4.7 MB | [MIT](https://github.com/yakhyo/gaze-estimation) |
+| `yolox_nano.onnx` | prohibited objects | 3.5 MB | [Apache 2.0](https://github.com/Megvii-BaseDetection/YOLOX) |
+| `w600k_mbf.onnx` | identity | 13.0 MB | [InsightFace](https://github.com/deepinsight/insightface) |
+
+Ultralytics' YOLO26n is deliberately **not** used. It is AGPL-3.0, which would
+require open-sourcing anything shipping it — and it measured 2.7× slower than
+YOLOX-Nano on this hardware, so the permissive option was also the quicker one.
+
+## What it detects
+
+| Violation | Fires when |
+|---|---|
+| `NeverSeen` | no face at all in the first 10 s |
+| `NoFace` | face absent for 2.5 s |
+| `MultipleFaces` | two or more faces for 2 s |
+| `HeadTurnedAway` | smoothed head yaw > 30° or pitch > 25° |
+| `GazeOffScreen` | smoothed gaze > 25° off centre |
+| `ProhibitedObject` | accumulated evidence for a phone crosses a threshold |
+| `IdentityMismatch` | three consecutive checks below the similarity floor |
+| `SignalLost` | pose or gaze unavailable for 5 s — a covered camera must not read as "all clear" |
+
+Every number above lives in `Config` and nowhere else. Dump the full set with
+`detect-cli config --out dev.toml`.
+
+**Identity needs enrolment.** Click **Enrol face** once, looking at the camera,
+before anything else. Until then the identity slot reports `NotConfigured` and
+no mismatch can fire — an unenrolled session is not a verified one.
+
+## Architecture
+
+```
+capture thread ──► ArcSwap<Frame>     latest-frame slot, overwrite, never a queue
+                          │
+      ┌───────────────────┼───────────────────┐
+      ▼                   ▼                   ▼
+ face worker 15 Hz   object worker 1 Hz  identity worker 0.2 Hz
+ YuNet → pose → gaze   YOLOX-Nano          ArcFace
+      └───────────────────┼───────────────────┘
+                          ▼
+                       Signals ──► fusion ──► Violations ──► events()
+```
+
+Rules that hold throughout:
+
+- **One ONNX Runtime session per model, owned by exactly one thread.** No
+  `Mutex<Session>` anywhere in the inference path.
+- **Every tunable number lives in one `Config` struct.**
+- **No detection or decision logic in JavaScript.** No thresholds, no timers,
+  no hysteresis. The front end renders what the library sends and computes
+  nothing.
+- **No frames cross the IPC boundary.** Preview is an MJPEG stream on loopback;
+  only a few hundred bytes of JSON per poll go through Tauri.
+- **Fusion is a pure function.** No clock reads, no I/O — so a recorded session
+  replays to a byte-identical event sequence, which is what makes threshold
+  tuning possible at all. 2700 frames replay in 87 ms.
+
+## Development
+
+```bash
+cd src-tauri
+cargo test --release          # 119 tests, no camera or models required
+cargo clippy --all-targets
+```
+
+`detect-cli` is a headless harness for the same library code — no window, no
+camera needed for most of it. It is **behind a feature flag** so it stays out
+of the installer, since it links its own copy of ONNX Runtime:
+
+```bash
+cargo run --release --features cli --bin detect-cli -- devices
+cargo run --release --features cli --bin detect-cli -- inspect ../models/*.onnx
+cargo run --release --features cli --bin detect-cli -- bench --all --iters 50
+cargo run --release --features cli --bin detect-cli -- record --source camera:0 --out s.jsonl
+cargo run --release --features cli --bin detect-cli -- replay s.jsonl
+```
+
+`replay` is the tuning loop: it runs fusion over a recording with **zero
+inference**, so changing a threshold is a TOML edit and an 87 ms re-run.
+
+`inspect` earns its keep — it reported that YuNet's released ONNX takes 640×640
+and not the 320×320 its docs imply, that the head-pose model returns a 3×3
+rotation matrix rather than Euler angles, and that MobileGaze emits two 90-bin
+classification heads rather than regressed angles. Guessing any of those
+produces plausible-looking output that is quietly wrong.
+
+## Measured
+
+Intel i7-11850H, CPU execution provider, release build.
+
+| | |
+|---|---|
+| Capture | 30.0 fps sustained |
+| Detection | 14.9 fps (15 Hz target) |
+| Face + pose + gaze worker | **27.0 ms p50 / 30.9 ms p95** |
+| YOLOX-Nano (1 Hz worker) | 11.6 ms p50 |
+| Identity worker | no measurable cost |
+
+Measured over a ten-minute live session with a face present throughout. Full
+methodology and the per-slot coverage breakdown are in `rust_context.md` §18.
+
+## Known limitations
+
+Stated plainly, because the HUD makes it look further along than it is:
+
+- **Book detection does not work.** COCO's `book` class maxed at 0.149 over
+  2700 frames of a book plainly in shot, with zero frames above 0.25. Phone
+  detection is validated (peaks 0.80 and 0.86); books are not. Fixing it needs
+  fine-tuning on proctoring data. See `rust_context.md` §18.4.
+- **Gaze pitch carries a systematic +12–15° offset** because the camera sits
+  above the screen. Corrected by a config constant for now; a proper
+  per-user calibration step is not built.
+- **Severity is a per-rule constant**, not a fused co-occurrence score.
+- **Enrolment is in memory only** and lasts as long as the process. Persisting
+  a face embedding is a data-protection decision, not a convenience.
+- **No session report is written to disk yet**, no evidence capture, no
+  calibration UI.
+- ffmpeg is an external dependency, as above.
 
 ## Licence
 

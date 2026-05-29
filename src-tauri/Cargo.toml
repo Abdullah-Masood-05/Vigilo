@@ -18,9 +18,23 @@ default-run = "deepscreen-viewer"
 name = "deepscreen_viewer"
 path = "src/lib.rs"
 
+# `detect-cli` is a development harness, not part of the product, and it links
+# its own copy of ONNX Runtime — shipping it puts the inference engine in the
+# installer twice for ~32 MB of no benefit to a tester.
+#
+# Tauri's bundler sweeps every binary Cargo produces, and offers no way to
+# exclude one, so the exclusion has to happen at the Cargo level:
+# `required-features` means a default build does not produce it at all.
+#
+#     cargo run --features cli --bin detect-cli -- devices
+#     cargo build --release --features cli --bin detect-cli
+#
+# `cargo test` still exercises the same library code, so nothing is untested by
+# this — see `tests/`.
 [[bin]]
 name = "detect-cli"
 path = "src/bin/detect-cli.rs"
+required-features = ["cli"]
 
 [build-dependencies]
 tauri-build = { version = "2", features = [] }
@@ -45,13 +59,39 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Inference. Pinned to one version so the app and detect-cli cannot disagree
-# about the ONNX Runtime binary. DirectML is deliberately NOT enabled yet.
-ort = { version = "2.0.0-rc.12", features = ["ndarray"] }
+# about the ONNX Runtime binary. DirectML is deliberately NOT enabled.
+#
+# `copy-dylibs` is dropped from the default feature set on purpose. ONNX
+# Runtime is statically linked here — there is no `onnxruntime.dll` beside the
+# exe — so the only thing that feature was copying into the output directory
+# was `DirectML.dll`, 17.7 MB of GPU backend for an execution provider we do
+# not enable. Tauri's bundler sweeps that directory, so the DLL was being
+# installed on every tester's machine to sit unused.
+ort = { version = "2.0.0-rc.12", default-features = false, features = [
+    "std",
+    "ndarray",
+    "tracing",
+    "download-binaries",
+    "tls-native",
+    "api-24",
+] }
 ndarray = "0.17"
 
 [dev-dependencies]
 tempfile = "3"
 
 [features]
-# Kept so `cargo tauri build` works unchanged; nothing custom here.
 default = []
+# Builds the `detect-cli` development harness. Off by default so it stays out
+# of the installer — see the `[[bin]]` section above.
+cli = []
+
+# Shipping profile. `strip` and `lto` together are worth several MB in a binary
+# this size and cost nothing at run time.
+#
+# `opt-level = "z"` is deliberately NOT set: this is a latency-bound pipeline
+# with a 27 ms budget per frame, and trading throughput for the last couple of
+# megabytes is the wrong side of that trade.
+[profile.release]
+strip = true
+lto = true

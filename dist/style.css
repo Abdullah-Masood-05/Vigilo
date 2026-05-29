@@ -325,3 +325,48 @@ body {
 .log-row.sev-critical .sev {
   color: #ef8080;
 }
+
+/* ---- setup gate ---- */
+
+/* Must come before the rule below, and must exist at all: the `hidden`
+   attribute only works through the user agent's `display: none`, and any
+   author `display` rule beats it. Setting `display: flex` without this makes
+   the panel permanently visible — which is exactly what happened, and it
+   presented as "the app thinks ffmpeg is missing" when ffmpeg was fine and the
+   panel simply never hid. `#error` above carries the same guard for the same
+   reason. */
+#setup[hidden] {
+  display: none;
+}
+
+/* Covers everything. There is no video behind this and nothing else on screen
+   is meaningful until the prerequisite is installed. */
+#setup {
+  position: absolute;
+  inset: 0;
+  z-index: 100;
+  background: #0d1117;
+  color: #d6deea;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  padding: 8vh 10vw;
+  gap: 18px;
+}
+
+#setup h1 {
+  font-family: ui-sans-serif, "Segoe UI", system-ui, sans-serif;
+  font-size: 26px;
+  font-weight: 500;
+  margin: 0;
+  color: #f0f4fa;
+}
+
+#setup pre {
+  font-family: ui-monospace, "Cascadia Mono", Consolas, monospace;
+  font-size: 14px;
+  line-height: 1.75;
+  white-space: pre-wrap;
+  margin: 0;
+  color: #b9c4d2;
+}

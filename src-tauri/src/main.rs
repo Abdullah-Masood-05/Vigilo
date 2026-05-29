@@ -39,6 +39,10 @@ struct ViewerState {
     /// the diagnosis is the whole value of an error in this layer
     /// (MODELS.md §8).
     startup_error: Option<String>,
+    /// A missing prerequisite rather than a failure — the app cannot run at
+    /// all until the user installs something. Rendered as a full-screen
+    /// instruction instead of an error strip over a dead video pane.
+    setup_blocked: bool,
 }
 
 /// Everything the HUD and overlay need, in one poll.
@@ -70,6 +74,8 @@ struct SnapshotDto {
     active_violations: Vec<String>,
     /// Whether a reference face has been enrolled this session.
     enrolled: bool,
+    /// Show `error` as a full-screen setup instruction, not an error banner.
+    setup_blocked: bool,
 }
 
 #[tauri::command]
@@ -86,6 +92,7 @@ fn snapshot(state: State<ViewerState>) -> SnapshotDto {
             // Set explicitly rather than left to `Default`, which would happen
             // to be right today only because `false` is both.
             preview_mirrored: preview::MIRRORED,
+            setup_blocked: state.setup_blocked,
             ..Default::default()
         };
     };
@@ -120,6 +127,7 @@ fn snapshot(state: State<ViewerState>) -> SnapshotDto {
             .map(|v| v.as_str().to_string())
             .collect(),
         enrolled: detector.is_enrolled(),
+        setup_blocked: state.setup_blocked,
     }
 }
 
@@ -164,13 +172,28 @@ fn main() {
             let preview_slot: PreviewSlot = Arc::new(ArcSwap::from_pointee(None));
             let preview_stats = Arc::new(PreviewStats::default());
 
-            let (detector, startup_error) = match start_detector(&args, model_dir.as_deref()) {
-                Ok(d) => (Some(Arc::new(d)), None),
-                Err(e) => {
-                    tracing::error!(error = %e, "could not start detection");
-                    (None, Some(explain(&e)))
-                }
-            };
+            // Preflight before anything expensive. A missing prerequisite is
+            // not a capture failure and must not be reported as one — the
+            // person reading this has never seen the app and needs an
+            // instruction, not a diagnosis.
+            let (detector, startup_error, blocked) =
+                if args.source.starts_with("dir:") || deepscreen_viewer::capture::ffmpeg_available()
+                {
+                    match start_detector(&args, model_dir.as_deref()) {
+                        Ok(d) => (Some(Arc::new(d)), None, false),
+                        Err(e) => {
+                            tracing::error!(error = %e, "could not start detection");
+                            (None, Some(explain(&e)), false)
+                        }
+                    }
+                } else {
+                    tracing::error!("ffmpeg is not on PATH");
+                    (
+                        None,
+                        Some(deepscreen_viewer::capture::FFMPEG_MISSING_HELP.to_string()),
+                        true,
+                    )
+                };
 
             // The stream server runs whether or not detection started: an empty
             // stream is better than a broken page, and the error is shown over
@@ -199,6 +222,7 @@ fn main() {
             }
 
             app.manage(ViewerState {
+                setup_blocked: blocked,
                 detector,
                 preview: preview_slot,
                 preview_stats,

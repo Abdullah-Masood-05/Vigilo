@@ -62,6 +62,16 @@
       </div>
 
       <div id="error" hidden></div>
+
+      <!--
+        Shown instead of everything else when a prerequisite is missing. A
+        person who has never seen this app cannot act on "capture failed"; they
+        can act on a command to copy and paste.
+      -->
+      <div id="setup" hidden>
+        <h1>One thing to install first</h1>
+        <pre id="setup-text"></pre>
+      </div>
     </div>
 
     <script src="main.js"></script>

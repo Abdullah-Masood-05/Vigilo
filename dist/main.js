@@ -24,6 +24,8 @@ const el = {
   enrol: document.getElementById("enrol"),
   enrolState: document.getElementById("enrol-state"),
   logRows: document.getElementById("log-rows"),
+  setup: document.getElementById("setup"),
+  setupText: document.getElementById("setup-text"),
   dirFrame: document.getElementById("dir-frame"),
   dirHeadH: document.getElementById("dir-head-h"),
   dirHeadV: document.getElementById("dir-head-v"),
@@ -142,6 +144,17 @@ async function poll() {
   } catch (e) {
     return; // a dropped poll is not worth reporting; the next one is 33 ms away
   }
+
+  // A missing prerequisite takes over the whole window. It is not an error
+  // strip over a dead video pane — there is nothing behind it to look at, and
+  // the only useful thing on screen is the instruction.
+  if (snap.setup_blocked) {
+    el.setup.hidden = false;
+    el.setupText.textContent = snap.error || "";
+    el.error.hidden = true;
+    return;
+  }
+  el.setup.hidden = true;
 
   if (snap.error) {
     el.error.hidden = false;
