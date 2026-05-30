@@ -22,7 +22,6 @@
 //!   frames. That is precisely why the real pipeline uses a latest-frame
 //!   `ArcSwap` slot and never a queue (§6 rule 3).
 
-use std::process::Command;
 
 use crate::config::CaptureConfig;
 use crate::error::{DetectError, Result};
@@ -77,7 +76,7 @@ pub fn list_devices() -> Result<Vec<CameraDevice>> {
 
     // ffmpeg prints the device list to stderr and then exits non-zero because
     // the dummy input cannot be opened. That is the documented way to do this.
-    let out = Command::new("ffmpeg")
+    let out = super::quiet_command("ffmpeg")
         .args(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
         .output()
         .map_err(|e| {
@@ -99,7 +98,7 @@ pub fn list_devices() -> Result<Vec<CameraDevice>> {
 /// asking for a combination the camera does not offer makes ffmpeg exit
 /// immediately rather than negotiate.
 pub fn list_formats(device: &CameraDevice) -> Result<Vec<CameraFormat>> {
-    let out = Command::new("ffmpeg")
+    let out = super::quiet_command("ffmpeg")
         .args(["-hide_banner", "-f", "dshow", "-list_options", "true", "-i"])
         .arg(format!("video={}", device.selector()))
         .output()
@@ -246,7 +245,7 @@ impl CameraSource {
                 },
             )?;
 
-        let mut cmd = Command::new("ffmpeg");
+        let mut cmd = super::quiet_command("ffmpeg");
         cmd.args(["-v", "error", "-nostdin", "-f", "dshow"])
             // dshow drops frames and warns loudly without a real-time buffer.
             .args(["-rtbufsize", "128M"]);
