@@ -76,6 +76,8 @@ struct SnapshotDto {
     enrolled: bool,
     /// Show `error` as a full-screen setup instruction, not an error banner.
     setup_blocked: bool,
+    /// `slot -> "DirectML" | "CPU"`, as actually obtained.
+    execution_providers: Vec<(String, String)>,
 }
 
 #[tauri::command]
@@ -128,6 +130,7 @@ fn snapshot(state: State<ViewerState>) -> SnapshotDto {
             .collect(),
         enrolled: detector.is_enrolled(),
         setup_blocked: state.setup_blocked,
+        execution_providers: detector.execution_providers(),
     }
 }
 

@@ -15,6 +15,7 @@ pub mod frame_bus;
 mod workers;
 
 use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
+use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex};
 use std::thread::JoinHandle;
 use std::time::SystemTime;
@@ -97,6 +98,11 @@ pub(crate) struct Shared {
     /// captured a usable face.
     enrol_request: AtomicBool,
 
+    /// Which execution provider each model session actually got, recorded at
+    /// load. Hard-coding "CPU" here is how a silent DirectML fallback stays
+    /// invisible, which is the failure this whole field exists to catch.
+    eps: Mutex<BTreeMap<String, String>>,
+
     /// Violations currently raised, for the polled snapshot.
     active_violations: Mutex<Vec<(crate::types::ViolationKind, Option<String>)>>,
     /// Every violation this session, closed ones included. Feeds the viewer's
@@ -151,6 +157,7 @@ impl Shared {
             identity: ArcSwap::from_pointee(IdentityResult::default()),
             enrolled: Mutex::new(None),
             enrol_request: AtomicBool::new(false),
+            eps: Mutex::new(BTreeMap::new()),
             active_violations: Mutex::new(Vec::new()),
             violation_log: Mutex::new(Vec::new()),
             error: Mutex::new(None),
@@ -237,6 +244,21 @@ impl Shared {
                 (result.score, state)
             }
         }
+    }
+
+    fn note_ep(&self, slot: &str, ep: crate::models::ActiveEp) {
+        if let Ok(mut map) = self.eps.lock() {
+            map.insert(slot.to_string(), ep.as_str().to_string());
+        }
+    }
+
+    /// What a slot actually ran on, or `"unknown"` if it never loaded.
+    fn ep_of(&self, slot: &str) -> String {
+        self.eps
+            .lock()
+            .ok()
+            .and_then(|m| m.get(slot).cloned())
+            .unwrap_or_else(|| "unknown".to_string())
     }
 
     fn note_degraded(&self, reason: DegradeReason) {
@@ -335,7 +357,8 @@ impl Detector {
             DetectError::Config("config.models.face is required — no face model, no session".into())
         })?;
         let face = YuNet::load(&face_path, &self.config)?;
-        tracing::info!(model = %face_path.display(), "face model ready");
+        self.shared.note_ep("face", face.ep());
+        tracing::info!(model = %face_path.display(), ep = face.ep().as_str(), "face model ready");
 
         // Everything past the face model is a capability, not a requirement:
         // if it will not load, the session continues without it and says so
@@ -343,7 +366,8 @@ impl Detector {
         let gaze = match self.config.models.gaze.clone() {
             Some(path) => match GazeNet::load(&path, &self.config) {
                 Ok(model) => {
-                    tracing::info!(model = %path.display(), "gaze model ready");
+                    self.shared.note_ep("gaze", model.ep());
+                    tracing::info!(model = %path.display(), ep = model.ep().as_str(), "gaze model ready");
                     Some(model)
                 }
                 Err(e) => {
@@ -361,7 +385,8 @@ impl Detector {
         let pose = match self.config.models.pose.clone() {
             Some(path) => match HeadPoseNet::load(&path, &self.config) {
                 Ok(model) => {
-                    tracing::info!(model = %path.display(), "head pose model ready");
+                    self.shared.note_ep("pose", model.ep());
+                    tracing::info!(model = %path.display(), ep = model.ep().as_str(), "head pose model ready");
                     Some(model)
                 }
                 Err(e) => {
@@ -387,7 +412,8 @@ impl Detector {
         let objects = match self.config.models.objects.clone() {
             Some(path) => match YoloxNano::load(&path, &self.config) {
                 Ok(model) => {
-                    tracing::info!(model = %path.display(), "object model ready");
+                    self.shared.note_ep("objects", model.ep());
+                    tracing::info!(model = %path.display(), ep = model.ep().as_str(), "object model ready");
                     // Configured but not yet run: frames before the first
                     // result are cadence skips, not a missing model.
                     self.shared.arm_objects();
@@ -408,7 +434,8 @@ impl Detector {
         let identity = match self.config.models.identity.clone() {
             Some(path) => match ArcFace::load(&path, &self.config) {
                 Ok(model) => {
-                    tracing::info!(model = %path.display(), "identity model ready");
+                    self.shared.note_ep("identity", model.ep());
+                    tracing::info!(model = %path.display(), ep = model.ep().as_str(), "identity model ready");
                     Some(model)
                 }
                 Err(e) => {
@@ -519,6 +546,20 @@ impl Detector {
         self.shared.enrolled.lock().map(|e| e.is_some()).unwrap_or(false)
     }
 
+    /// Which execution provider each model slot actually ended up on.
+    ///
+    /// Exposed so the HUD can show it. ORT falls back to CPU silently, and a
+    /// GPU that never engaged is indistinguishable from a GPU that did not
+    /// help unless this is on screen next to the latency it supposedly
+    /// improved.
+    pub fn execution_providers(&self) -> Vec<(String, String)> {
+        self.shared
+            .eps
+            .lock()
+            .map(|m| m.iter().map(|(k, v)| (k.clone(), v.clone())).collect())
+            .unwrap_or_default()
+    }
+
     /// Every violation this session, closed ones included.
     pub fn violations(&self) -> Vec<crate::types::Violation> {
         self.shared.violation_log.lock().map(|v| v.clone()).unwrap_or_default()
@@ -565,7 +606,7 @@ impl Detector {
                     0.0
                 },
                 frames_processed: stats.frames_detected,
-                execution_provider: "CPU".to_string(),
+                execution_provider: self.shared.ep_of("face"),
                 latency: Some(detect),
             },
         );
@@ -584,14 +625,22 @@ impl Detector {
                     0.0
                 },
                 frames_processed: object_latency.samples,
-                execution_provider: "CPU".to_string(),
+                execution_provider: self.shared.ep_of("objects"),
                 latency: Some(object_latency),
             },
         );
         for slot in ["pose", "gaze", "identity"] {
             // Present and explicitly inactive, rather than absent. An absent
-            // key would read as "not applicable".
-            signals.insert(slot.to_string(), SignalStatus::default());
+            // key would read as "not applicable". The EP is still recorded —
+            // a slot that loaded on DirectML and then produced nothing is a
+            // different problem from one that never loaded.
+            signals.insert(
+                slot.to_string(),
+                SignalStatus {
+                    execution_provider: self.shared.ep_of(slot),
+                    ..SignalStatus::default()
+                },
+            );
         }
 
         SessionReport {

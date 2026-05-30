@@ -31,11 +31,11 @@ use fast_image_resize::images::{Image, ImageRef};
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use ort::session::Session;
 
-use crate::config::Config;
+use crate::config::{Config, ModelSlot};
 use crate::error::{DetectError, Result};
 use crate::types::{BBox, FaceDetection, FaceKeypoints, Frame};
 
-use super::{build_session, inference_error, nchw_input, StageTimings};
+use super::{build_session_for, ActiveEp, inference_error, nchw_input, StageTimings};
 
 /// The model's fixed input side. Not configurable — it is baked into the file.
 pub const INPUT_SIZE: u32 = 640;
@@ -51,6 +51,9 @@ const STRIDES: [u32; 3] = [8, 16, 32];
 const CHANNEL_ORDER_BGR: bool = true;
 
 pub struct YuNet {
+    /// Which execution provider this session actually got — reported,
+    /// never inferred from timing.
+    ep: ActiveEp,
     session: Session,
     score_threshold: f32,
     nms_threshold: f32,
@@ -72,11 +75,27 @@ struct Letterbox {
 }
 
 impl YuNet {
+    /// Which execution provider this session is actually running on.
+    ///
+    /// Read from the session that was built, not from what config asked
+    /// for — those differ whenever DirectML registration failed and the
+    /// CPU fallback took over.
+    pub fn ep(&self) -> ActiveEp {
+        self.ep
+    }
+
     pub fn load(path: impl AsRef<Path>, cfg: &Config) -> Result<Self> {
-        let session = build_session(path, &cfg.runtime, false)?;
+        let (session, ep) = build_session_for(
+            path,
+            &cfg.runtime,
+            false,
+            ModelSlot::Face,
+            &[],
+        )?;
         let side = INPUT_SIZE as usize;
 
         let mut model = Self {
+            ep,
             session,
             score_threshold: cfg.thresholds.face.min_score as f32,
             nms_threshold: cfg.thresholds.face.nms_threshold as f32,

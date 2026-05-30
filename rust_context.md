@@ -1656,3 +1656,201 @@ violation that never fires:
   holding `0.436` where the evidence says `25` is how a unit mismatch survives
   review. Radians now exist only on the wire, converted once on ingest.
 - `identity.consecutive_failures` 2 → 3, for the reason in §19.2.
+
+---
+
+## 20. DirectML — the GPU turns out to be worth far more than predicted
+
+Branch `gpu-directml`. Scope was the execution provider and nothing else: no
+camera work, no fusion changes, no threshold changes.
+
+The headline: **detect-thread p50 fell from 27.03 ms to 5.77 ms, a 4.7×
+improvement.** That is roughly three times better than this work was expected
+to deliver, and the reason why is a correction to how the budget was
+understood — see §20.5.
+
+### 20.1 The prerequisite: one dynamic axis, pinned by name
+
+DirectML partitions the graph at session creation and wants every shape known
+by then. Four of the five models already ship fully static. ArcFace does not:
+`input.1` is `[?, 3, 112, 112]`.
+
+The axis is **literally named `None`** — what PyTorch's ONNX exporter writes
+for an unnamed batch dimension. That matters because
+`SessionBuilder::with_dimension_override` addresses an axis *by name*, and
+overriding a name the graph does not use is a **silent no-op**: the session
+builds, DirectML quietly leaves that subgraph on the CPU, and the result looks
+like "the GPU didn't help here".
+
+So the name was read out of the model rather than guessed. `detect-cli inspect`
+now prints symbolic dimension names (`?None` rather than a bare `?`), because
+otherwise there is nowhere to read it from:
+
+```
+../models/w600k_mbf.onnx
+  inputs:
+    input.1                  Float32  [?None, 3, 112, 112]
+```
+
+Pinned at load with `with_dimension_override("None", 1)` rather than by
+re-exporting the weights, so the model file stays exactly as downloaded and
+there is nothing to redo when someone fetches it fresh.
+
+### 20.2 Per-model, because the received wisdom said it had to be
+
+EP dispatch has a fixed per-inference cost, so the standard expectation is that
+small graphs lose on the GPU — the transfer and setup swamp work that only took
+a millisecond. That is why the provider is configured **per model slot**
+(`[runtime.providers]`) rather than globally, and why every slot was measured
+on its own before any default was set.
+
+50 iterations after 5 warm-up, synthetic zero tensors, same machine, same
+build:
+
+| model | CPU p50 | DirectML p50 | speedup | expectation |
+|---|---|---|---|---|
+| YuNet (face) | 4.02 ms | **1.52 ms** | 2.6× | "may not benefit" |
+| Head pose | 1.49 ms | **0.96 ms** | 1.6× | "likely *worse*" |
+| Gaze | 8.81 ms | **1.38 ms** | 6.4× | best candidate ✓ |
+| ArcFace (identity) | 11.23 ms | **1.04 ms** | 10.8× | "marginal" |
+| YOLOX (objects) | 10.57 ms | **2.14 ms** | 4.9× | good candidate ✓ |
+
+**Every single model won, including both that were predicted to lose.** Head
+pose is a 1.5 ms graph and still improved 1.6×; ArcFace, called "marginal",
+improved more than any other model in the set. The per-model plumbing was
+built to find the losers and there were none — which is a better outcome than
+the design anticipated and worth recording as such, because the reasoning that
+predicted losers is sound and simply did not apply to this hardware.
+
+Defaults are therefore DirectML for all five slots. The mechanism stays
+per-slot: it cost nothing to keep, and on a machine where the trade goes the
+other way it is a config edit rather than a code change.
+
+**Load time is the cost.** DirectML compiles the graph at session creation:
+YuNet's load went from 40 ms to 3266 ms, and total startup from roughly 2 s to
+about 5 s. Paid once, and paying it up front rather than mid-session is the
+right side of that trade (MODELS.md §9).
+
+### 20.3 Which provider actually engaged, and why that is reported not inferred
+
+ORT falls back to CPU **silently** when an EP fails to register. This is the
+single most misread failure in the stack: it looks exactly like "the GPU didn't
+help" when the GPU never ran.
+
+Three things make it visible. `error_on_failure()` on the EP dispatch turns the
+silent fallback into an error this code can catch. `build_session_for` returns
+the provider actually obtained, not the one requested. And that value is
+surfaced in three places — the startup log, the HUD's `ep` line, and
+`SessionReport.signals[*].execution_provider`, which previously hard-coded the
+string `"CPU"` and would have lied about every session from here on.
+
+```
+INFO session created model=...\face_detection_yunet_2023mar.onnx slot="face" ep="DirectML"
+INFO session created model=...\mobileone_s0_gaze.onnx           slot="gaze" ep="DirectML"
+```
+
+**Never infer DirectML from a latency change.** Read it from one of those three.
+
+### 20.4 The fallback, verified by breaking it
+
+Renaming the bundled `DirectML.dll` and launching produced exactly the intended
+behaviour: a warning per affected session naming the model, and a clean CPU
+session rather than a crash.
+
+```
+WARN DirectML unavailable for this session; falling back to CPU
+     model=...\face_detection_yunet_2023mar.onnx slot="face"
+     error=Exception during initialization: ... 80070057 The parameter is incorrect.
+INFO session created model=...\face_detection_yunet_2023mar.onnx slot="face" ep="CPU"
+```
+
+Worth recording: **only some sessions fell back.** Face and objects went to
+CPU; pose, gaze and identity still got DirectML, because Windows ships an inbox
+`DirectML.dll` that satisfied them. That partial result is itself the strongest
+evidence the reporting is real — a hard-coded or inferred value could not have
+produced a mixed answer, and the run measured 9.70 ms p50, sitting exactly
+between the all-GPU and all-CPU figures.
+
+### 20.5 The prediction was wrong, and the reason is worth keeping
+
+This work was forecast to gain 1.4–1.6× overall, ceiling 2.4×, on the reasoning
+that only 15.76 ms of the 27.03 ms detect thread was inference and the other
+**11.27 ms was CPU preprocessing** no GPU touches.
+
+That split was wrong. `detect_p50` has always been **inference only** —
+`timings.inference_us`, accumulated per model — while `total_p50` adds
+preprocessing and decode. Reading §18.3's own pair of numbers back:
+
+| | detect p50 (inference) | total p50 | preprocessing |
+|---|---|---|---|
+| CPU (§18.3) | 27.03 ms | 30.71 ms | **3.68 ms** |
+| DirectML | 5.77 ms | 9.85 ms | 4.08 ms |
+
+Preprocessing was never 11.27 ms; it is under 4 ms and essentially unchanged by
+this work, as expected. Inference was 27.03 ms, not 15.76 ms — real crops cost
+noticeably more than the synthetic zero tensors the per-model floors were
+measured on, which is a caution about those floors rather than about this
+result.
+
+So the ceiling was far higher than 2.4×, and the measured outcome is **4.7× on
+inference and 3.1× end to end**. The forecast method was sound; the input
+number was misread. The optimisation the prompt suggested as a fallback —
+sharing the crop between pose and gaze to recover preprocessing time — is now
+clearly **not** worth doing: there are under 4 ms there in total.
+
+### 20.6 The spin-wait fix still holds
+
+§18.2 dropped the object session to one intra-op thread after contention
+tripled the face worker's p50. GPU sessions change the threading picture
+entirely, so the same A/B was re-run: face in frame both times, only
+`object_hz` varied.
+
+| objects | face worker p50 |
+|---|---|
+| 1 Hz | 5.77 ms |
+| 0.05 Hz | 5.77 ms |
+
+**A 0.00 ms gap.** No regression. Capture held 30+ fps and detection 14.9 fps
+against the 15 Hz target throughout.
+
+### 20.7 One measurement that was nearly recorded wrong
+
+The first live run after switching defaults read 16.65 ms p50 — a plausible
+number, comfortably in the predicted 1.4–1.6× band, and wrong. Three
+subsequent runs of the identical config all read 5.7–5.8 ms.
+
+The 16.65 ms run was the first execution after the DirectML session
+compilation, and it was taken while the ANSI-coloured log was being filtered by
+a grep that silently failed to match the `ep=` field — so there was no
+confirmation of which provider had actually run. Had it been written down it
+would have looked like a modest, believable success and would have understated
+the result by a factor of three.
+
+The lesson is the same one §18.3 recorded about the 5.94 ms figure, arriving
+from the opposite direction: **a number without its provenance is not a
+measurement.** Every figure in this section was taken with the EP confirmed in
+the same run's log.
+
+### 20.8 Installer size
+
+DirectML re-adds `DirectML.dll`, and `copy-dylibs` has to come back with it —
+ONNX Runtime itself is still statically linked, but DirectML is a genuine
+dynamic dependency and the app will not start without it beside the exe.
+
+| | main (CPU) | this branch |
+|---|---|---|
+| DirectML.dll | absent | +17.7 MB |
+
+`detect-cli` remains excluded from the bundle behind the `cli` feature, so the
+~32 MB saved there still offsets most of this.
+
+### 20.9 Not done
+
+- Only tested on this machine's GPU. Behaviour on an AMD or NVIDIA discrete
+  device, or on a machine with no DX12 device at all, is inferred from the
+  fallback test rather than observed.
+- p95 improved much less than p50 (30.87 → 28.13 ms) and the distribution is
+  now visibly bimodal — most frames very fast, a tail that is not. That looks
+  like GPU queue scheduling and has not been investigated.
+- The `ep` HUD line and `SessionReport` field are wired but have not been
+  eyeballed in a long session.

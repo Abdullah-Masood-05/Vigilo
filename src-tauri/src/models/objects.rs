@@ -42,11 +42,11 @@ use fast_image_resize::images::{Image, ImageRef};
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use ort::session::Session;
 
-use crate::config::Config;
+use crate::config::{Config, ModelSlot};
 use crate::error::{DetectError, Result};
 use crate::types::{BBox, Frame, ObjectDetection};
 
-use super::{build_session, inference_error, nchw_input, StageTimings};
+use super::{build_session_for, ActiveEp, inference_error, nchw_input, StageTimings};
 
 pub const INPUT_SIZE: u32 = 416;
 
@@ -78,6 +78,9 @@ pub const COCO_CLASSES: [&str; NUM_CLASSES] = [
 ];
 
 pub struct YoloxNano {
+    /// Which execution provider this session actually got — reported,
+    /// never inferred from timing.
+    ep: ActiveEp,
     session: Session,
     resizer: Resizer,
     scaled: Image<'static>,
@@ -90,10 +93,25 @@ pub struct YoloxNano {
 }
 
 impl YoloxNano {
+    /// Which execution provider this session is actually running on.
+    ///
+    /// Read from the session that was built, not from what config asked
+    /// for — those differ whenever DirectML registration failed and the
+    /// CPU fallback took over.
+    pub fn ep(&self) -> ActiveEp {
+        self.ep
+    }
+
     pub fn load(path: impl AsRef<Path>, cfg: &Config) -> Result<Self> {
         // Big graph, low rate: this one gets the larger intra-op budget
         // (MODELS.md §6 rule 2).
-        let session = build_session(path, &cfg.runtime, true)?;
+        let (session, ep) = build_session_for(
+            path,
+            &cfg.runtime,
+            true,
+            ModelSlot::Objects,
+            &[],
+        )?;
         let side = INPUT_SIZE as usize;
 
         let allowed = resolve_allowlist(&cfg.thresholds.objects.allowlist);
@@ -104,6 +122,7 @@ impl YoloxNano {
         }
 
         let mut model = Self {
+            ep,
             session,
             resizer: Resizer::new(),
             scaled: Image::new(INPUT_SIZE, INPUT_SIZE, PixelType::U8x3),

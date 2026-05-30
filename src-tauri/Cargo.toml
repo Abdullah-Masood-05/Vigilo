@@ -67,6 +67,14 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # was `DirectML.dll`, 17.7 MB of GPU backend for an execution provider we do
 # not enable. Tauri's bundler sweeps that directory, so the DLL was being
 # installed on every tester's machine to sit unused.
+# `directml` is in the prebuilt binaries — no source build needed. Guides that
+# say otherwise are describing ort 1.x. Enabling it re-adds DirectML.dll
+# (~17.7 MB) to the output directory and therefore to the installer, which is
+# the price of GPU inference and is accepted deliberately.
+#
+# `copy-dylibs` has to come back with it: ONNX Runtime itself is still
+# statically linked, but DirectML.dll is a real dynamic dependency and the app
+# will not start without it beside the exe.
 ort = { version = "2.0.0-rc.12", default-features = false, features = [
     "std",
     "ndarray",
@@ -74,6 +82,8 @@ ort = { version = "2.0.0-rc.12", default-features = false, features = [
     "download-binaries",
     "tls-native",
     "api-24",
+    "directml",
+    "copy-dylibs",
 ] }
 ndarray = "0.17"
 

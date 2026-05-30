@@ -35,11 +35,11 @@ use fast_image_resize::images::{Image, ImageRef};
 use fast_image_resize::{FilterType, PixelType, ResizeAlg, ResizeOptions, Resizer};
 use ort::session::Session;
 
-use crate::config::Config;
+use crate::config::{Config, ModelSlot};
 use crate::error::{DetectError, Result};
 use crate::types::{FaceDetection, Frame};
 
-use super::{build_session, inference_error, StageTimings};
+use super::{build_session_for, ActiveEp, inference_error, StageTimings};
 
 /// Fixed by the exported graph.
 pub const INPUT_SIZE: u32 = 112;
@@ -49,7 +49,28 @@ pub const EMBEDDING_DIM: usize = 512;
 const INPUT_NAME: &str = "input.1";
 const OUTPUT_NAME: &str = "516";
 
+/// Pin the one dynamic axis in the whole model set.
+///
+/// This is the only model of the five that does not ship fully static:
+/// `input.1` is `[?, 3, 112, 112]`. DirectML wants every shape known when the
+/// session is created, and an axis left free means the EP quietly leaves that
+/// subgraph on the CPU — which reads as "DirectML didn't help" rather than as
+/// "DirectML never ran here".
+///
+/// The axis is literally named `None`, which is what PyTorch's ONNX exporter
+/// writes for an unnamed batch dimension. That is confirmed from
+/// `detect-cli inspect`, not guessed — overriding a name the graph does not
+/// use is a silent no-op, so guessing would have looked like it worked.
+///
+/// Overriding at load rather than re-exporting the weights keeps the model
+/// file exactly as downloaded, so there is nothing to re-do when it is
+/// fetched fresh.
+pub(crate) const ARCFACE_DIMS: &[(&str, i64)] = &[("None", 1)];
+
 pub struct ArcFace {
+    /// Which execution provider this session actually got — reported,
+    /// never inferred from timing.
+    ep: ActiveEp,
     session: Session,
     resizer: Resizer,
     scaled: Image<'static>,
@@ -57,15 +78,31 @@ pub struct ArcFace {
 }
 
 impl ArcFace {
+    /// Which execution provider this session is actually running on.
+    ///
+    /// Read from the session that was built, not from what config asked
+    /// for — those differ whenever DirectML registration failed and the
+    /// CPU fallback took over.
+    pub fn ep(&self) -> ActiveEp {
+        self.ep
+    }
+
     pub fn load(path: impl AsRef<Path>, cfg: &Config) -> Result<Self> {
         // `false` = the small-model thread budget. This is a 13 MB graph run
         // at 0.2 Hz; §18.2 is the standing lesson that a thread budget tuned
         // for a model in isolation is not a budget for one sharing a machine
         // with a 15 Hz worker. One extra idle pool is exactly what tripled the
         // face worker's latency last time.
-        let session = build_session(path, &cfg.runtime, false)?;
+        let (session, ep) = build_session_for(
+            path,
+            &cfg.runtime,
+            false,
+            ModelSlot::Identity,
+            ARCFACE_DIMS,
+        )?;
         let side = INPUT_SIZE as usize;
         let mut model = Self {
+            ep,
             session,
             resizer: Resizer::new(),
             scaled: Image::new(INPUT_SIZE, INPUT_SIZE, PixelType::U8x3),

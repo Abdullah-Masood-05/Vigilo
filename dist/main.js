@@ -372,6 +372,7 @@ function drawHud(snap) {
     poseLine(snap.signals?.head_pose),
     gazeLine(snap.signals?.gaze),
     slotLine(snap.signals?.produced_by),
+    epLine(snap.execution_providers),
     // Permanent, not a probe: a viewport wider than the window silently crops
     // the frame and pushes right-anchored UI off-screen. An instrument should
     // report the geometry it is drawing into.
@@ -384,6 +385,18 @@ function drawHud(snap) {
   ]
     .filter(Boolean)
     .join("\n");
+}
+
+// Which execution provider each model session actually got.
+//
+// On screen permanently and deliberately: ORT falls back to CPU *silently*
+// when an EP fails to register, and a GPU that never engaged looks exactly
+// like a GPU that did not help. Reading this off the HUD is the only honest
+// way to know; a latency number cannot tell you.
+function epLine(eps) {
+  if (!eps || !eps.length) return "";
+  const parts = eps.map(([slot, ep]) => `${slot}:${ep === "DirectML" ? "dml" : "cpu"}`);
+  return `ep      ${parts.join("  ")}`;
 }
 
 function gazeLine(gaze) {

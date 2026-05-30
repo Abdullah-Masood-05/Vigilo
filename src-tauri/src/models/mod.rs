@@ -22,11 +22,12 @@ pub mod pose;
 
 use std::path::{Path, PathBuf};
 
+use ort::ep;
 use ort::session::builder::GraphOptimizationLevel;
 use ort::session::Session;
 use ort::value::ValueType;
 
-use crate::config::RuntimeConfig;
+use crate::config::{ExecutionProviderPref, ModelSlot, RuntimeConfig};
 use crate::error::{DetectError, Result};
 
 /// Per-stage cost of one model run, in microseconds (MODELS.md §11).
@@ -52,6 +53,13 @@ pub struct TensorSpec {
     pub name: String,
     pub dtype: String,
     pub shape: Vec<i64>,
+    /// Symbolic name per axis, empty string where the axis is fixed.
+    ///
+    /// Needed because pinning a dynamic axis with
+    /// `SessionBuilder::with_dimension_override` addresses it *by name* — so
+    /// "this model has a dynamic dimension" is not actionable on its own, and
+    /// the name is not visible anywhere else.
+    pub symbols: Vec<String>,
 }
 
 impl TensorSpec {
@@ -64,10 +72,22 @@ impl TensorSpec {
 
 impl std::fmt::Display for TensorSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // A dynamic axis prints its symbolic name rather than a bare `?`,
+        // because the name is what `with_dimension_override` needs and there
+        // is nowhere else to read it from.
         let dims: Vec<String> = self
             .shape
             .iter()
-            .map(|d| if *d < 0 { "?".to_string() } else { d.to_string() })
+            .enumerate()
+            .map(|(i, d)| {
+                if *d >= 0 {
+                    return d.to_string();
+                }
+                match self.symbols.get(i) {
+                    Some(sym) if !sym.is_empty() => format!("?{sym}"),
+                    _ => "?".to_string(),
+                }
+            })
             .collect();
         write!(f, "{:<24} {:<8} [{}]", self.name, self.dtype, dims.join(", "))
     }
@@ -111,56 +131,155 @@ pub fn inspect(path: impl AsRef<Path>) -> Result<ModelInfo> {
 }
 
 fn outlet_spec(outlet: &ort::value::Outlet) -> TensorSpec {
-    let (dtype, shape) = match outlet.dtype() {
-        ValueType::Tensor { ty, shape, .. } => (format!("{ty:?}"), shape.to_vec()),
-        other => (format!("{other:?}"), Vec::new()),
+    let (dtype, shape, symbols) = match outlet.dtype() {
+        ValueType::Tensor { ty, shape, dimension_symbols } => (
+            format!("{ty:?}"),
+            shape.to_vec(),
+            dimension_symbols.iter().map(|s| s.to_string()).collect(),
+        ),
+        other => (format!("{other:?}"), Vec::new(), Vec::new()),
     };
-    TensorSpec { name: outlet.name().to_string(), dtype, shape }
+    TensorSpec { name: outlet.name().to_string(), dtype, shape, symbols }
 }
 
-/// Build a session with this crate's threading policy applied.
+/// Which execution provider a session actually ended up on.
+///
+/// Reported rather than assumed, because ORT falls back to CPU **silently**
+/// when an EP fails to register — and that is the single most misread failure
+/// in this stack. It looks exactly like "the GPU didn't help" when the GPU
+/// never ran at all. Never infer this from a latency change; read it from the
+/// startup log, the HUD or the session report.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum ActiveEp {
+    #[default]
+    Cpu,
+    DirectMl,
+}
+
+impl ActiveEp {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ActiveEp::Cpu => "CPU",
+            ActiveEp::DirectMl => "DirectML",
+        }
+    }
+}
+
+/// Free-dimension overrides needed to give a model a fully static shape.
+///
+/// DirectML wants every shape known at session creation. Four of the five
+/// models are already static; ArcFace ships with a dynamic batch axis, and
+/// rather than re-exporting the weights the axis is pinned here by name at
+/// load time. Same result, no modified model file to keep in sync.
+type DimOverrides<'a> = &'a [(&'a str, i64)];
+
+/// Build a session with this crate's threading and execution-provider policy.
 ///
 /// `large` selects the bigger intra-op budget — true for YOLO's graph, false
 /// for the small high-rate models where sync overhead exceeds the win.
 pub fn build_session(path: impl AsRef<Path>, rt: &RuntimeConfig, large: bool) -> Result<Session> {
+    build_session_for(path, rt, large, ModelSlot::Face, &[]).map(|(session, _)| session)
+}
+
+/// As [`build_session`], but for a named slot — which decides the requested
+/// execution provider — and returning which provider was actually obtained.
+pub fn build_session_for(
+    path: impl AsRef<Path>,
+    rt: &RuntimeConfig,
+    large: bool,
+    slot: ModelSlot,
+    dims: DimOverrides<'_>,
+) -> Result<(Session, ActiveEp)> {
     let path = path.as_ref();
+    let want_dml = matches!(rt.providers.for_slot(slot), ExecutionProviderPref::DirectMlThenCpu);
+
+    if want_dml {
+        match try_build(path, rt, large, true, dims) {
+            Ok(session) => {
+                tracing::info!(
+                    model = %path.display(),
+                    slot = slot.as_str(),
+                    ep = "DirectML",
+                    "session created"
+                );
+                return Ok((session, ActiveEp::DirectMl));
+            }
+            // Deliberately not fatal, and deliberately loud. A machine without
+            // a DX12 device is a supported machine; one that silently ran on
+            // the CPU while the log claimed otherwise is not.
+            Err(e) => tracing::warn!(
+                model = %path.display(),
+                slot = slot.as_str(),
+                error = %e,
+                "DirectML unavailable for this session; falling back to CPU"
+            ),
+        }
+    }
+
+    let session = try_build(path, rt, large, false, dims).map_err(|e| model_load(path, e))?;
+    tracing::info!(
+        model = %path.display(),
+        slot = slot.as_str(),
+        ep = "CPU",
+        "session created"
+    );
+    Ok((session, ActiveEp::Cpu))
+}
+
+fn try_build(
+    path: &Path,
+    rt: &RuntimeConfig,
+    large: bool,
+    dml: bool,
+    dims: DimOverrides<'_>,
+) -> std::result::Result<Session, ort::Error> {
     let intra = if large { rt.intra_threads_large } else { rt.intra_threads_small };
 
     // `SessionBuilder`'s combinators return their own error type carrying the
-    // builder back, so this reads better as a sequence than a chain. `?` does
-    // the conversion.
-    let session = (|| -> std::result::Result<Session, ort::Error> {
-        let mut builder = Session::builder()?
-            .with_intra_threads(intra)?
-            .with_inter_threads(rt.inter_threads)?
-            .with_optimization_level(GraphOptimizationLevel::Level3)?
-            // ORT's default constant-cost parallelism model produces high
-            // latency variance. Decreasing-granularity work claiming trades a
-            // little mean for a much tighter tail, and p95 is what a candidate
-            // actually experiences as a stutter (MODELS.md §6 rule 2).
-            .with_dynamic_block_base(rt.dynamic_block_base as u32)?
-            // ORT's thread pools spin-wait between inferences by default,
-            // which suits back-to-back batch work and actively harms this
-            // pipeline: every worker here is cadence-driven with long idle
-            // gaps, so spinning pools burn cores doing nothing and starve the
-            // workers that are trying to run. Measured cost of leaving it on:
-            // the face worker's p50 tripled once a second session existed.
-            .with_intra_op_spinning(rt.allow_spinning)?
-            .with_inter_op_spinning(rt.allow_spinning)?;
-        // `enable_cpu_mem_arena` is left ON deliberately: disabling it saves
-        // memory but ORT's own docs say it increases latency.
-        builder.commit_from_file(path)
-    })()
-    .map_err(|e| model_load(path, e))?;
+    // builder back, so this reads better as a sequence than a chain.
+    let mut builder = Session::builder()?
+        .with_intra_threads(intra)?
+        .with_inter_threads(rt.inter_threads)?
+        .with_optimization_level(GraphOptimizationLevel::Level3)?
+        // ORT's default constant-cost parallelism model produces high
+        // latency variance. Decreasing-granularity work claiming trades a
+        // little mean for a much tighter tail, and p95 is what a candidate
+        // actually experiences as a stutter (MODELS.md §6 rule 2).
+        .with_dynamic_block_base(rt.dynamic_block_base as u32)?
+        // ORT's thread pools spin-wait between inferences by default,
+        // which suits back-to-back batch work and actively harms this
+        // pipeline: every worker here is cadence-driven with long idle
+        // gaps, so spinning pools burn cores doing nothing and starve the
+        // workers that are trying to run. Measured cost of leaving it on:
+        // the face worker's p50 tripled once a second session existed.
+        .with_intra_op_spinning(rt.allow_spinning)?
+        .with_inter_op_spinning(rt.allow_spinning)?;
 
-    tracing::debug!(
-        model = %path.display(),
-        intra_threads = intra,
-        inter_threads = rt.inter_threads,
-        dynamic_block_base = rt.dynamic_block_base,
-        "session created"
-    );
-    Ok(session)
+    // Pin any dynamic axis before the EP sees the graph. DirectML partitions
+    // at session creation, so a dimension left free here is a subgraph that
+    // silently stays on the CPU.
+    for (name, size) in dims {
+        builder = builder.with_dimension_override(*name, *size)?;
+    }
+
+    if dml {
+        builder = builder
+            // Both are mandatory for DirectML, not tuning knobs: the EP does
+            // not support parallel execution, and its memory-pattern planner
+            // conflicts with ORT's. Leaving either at its default produces
+            // either an outright failure or quietly wrong behaviour.
+            .with_parallel_execution(false)?
+            .with_memory_pattern(false)?
+            // `error_on_failure` is what turns ORT's silent CPU fallback into
+            // something this function can see and report. Without it the
+            // session would build "successfully" on the CPU and every layer
+            // above would believe DirectML was running.
+            .with_execution_providers([ep::DirectML::default().build().error_on_failure()])?;
+    }
+
+    // `enable_cpu_mem_arena` is left ON deliberately: disabling it saves
+    // memory but ORT's own docs say it increases latency.
+    builder.commit_from_file(path)
 }
 
 /// What a synthetic benchmark of one model measured.
@@ -171,6 +290,28 @@ pub struct BenchResult {
     pub load_ms: f64,
     pub latency: crate::report::LatencySummary,
     pub input_shapes: Vec<Vec<i64>>,
+    /// Which EP this measurement was actually taken on. Without it a bench
+    /// table comparing CPU and DirectML could silently be two CPU columns.
+    pub ep: ActiveEp,
+}
+
+/// Map a model file to its pipeline slot by conventional filename.
+///
+/// The benchmark is given a path, not a slot, and the slot decides both the
+/// execution provider and whether a dimension override is needed.
+fn slot_for_path(path: &Path) -> ModelSlot {
+    let name = path.file_name().and_then(|n| n.to_str()).unwrap_or_default().to_ascii_lowercase();
+    if name.contains("yunet") || name.contains("face_detection") {
+        ModelSlot::Face
+    } else if name.contains("headpose") || name.contains("mobilenetv3") {
+        ModelSlot::Pose
+    } else if name.contains("gaze") || name.contains("mobileone") {
+        ModelSlot::Gaze
+    } else if name.contains("yolo") {
+        ModelSlot::Objects
+    } else {
+        ModelSlot::Identity
+    }
 }
 
 /// Load a model and time it on zero tensors.
@@ -186,8 +327,15 @@ pub fn bench_model(path: impl AsRef<Path>, rt: &RuntimeConfig, iters: u32) -> Re
     let size_bytes = std::fs::metadata(path).map(|m| m.len()).unwrap_or(0);
     let large = size_bytes > 8 * 1024 * 1024;
 
+    // Infer the slot from the filename so the benchmark uses the same
+    // execution provider the pipeline would give this model. Benchmarking
+    // every model under one slot's EP setting would answer a question nobody
+    // asked.
+    let slot = slot_for_path(path);
+    let dims = if slot == ModelSlot::Identity { crate::models::identity::ARCFACE_DIMS } else { &[] };
+
     let t = std::time::Instant::now();
-    let mut session = build_session(path, rt, large)?;
+    let (mut session, ep) = build_session_for(path, rt, large, slot, dims)?;
     let load_ms = t.elapsed().as_secs_f64() * 1000.0;
 
     // Allocate a zero buffer per input, substituting 1 for any dynamic axis.
@@ -231,6 +379,7 @@ pub fn bench_model(path: impl AsRef<Path>, rt: &RuntimeConfig, iters: u32) -> Re
         load_ms,
         latency: latencies.summary().unwrap_or_default(),
         input_shapes: shapes,
+        ep,
     })
 }
 
@@ -293,8 +442,12 @@ mod tests {
 
     #[test]
     fn dynamic_axes_are_reported_as_such() {
-        let dynamic =
-            TensorSpec { name: "input".into(), dtype: "Float32".into(), shape: vec![1, 3, -1, -1] };
+        let dynamic = TensorSpec {
+            name: "input".into(),
+            dtype: "Float32".into(),
+            shape: vec![1, 3, -1, -1],
+            symbols: vec![String::new(), String::new(), String::new(), String::new()],
+        };
         assert!(!dynamic.is_static());
         assert!(dynamic.to_string().contains("[1, 3, ?, ?]"));
 
@@ -302,15 +455,37 @@ mod tests {
             name: "input".into(),
             dtype: "Float32".into(),
             shape: vec![1, 3, 320, 320],
+            symbols: vec![String::new(); 4],
         };
         assert!(fixed.is_static());
+    }
+
+    #[test]
+    fn a_named_dynamic_axis_prints_its_name() {
+        // The name is what `with_dimension_override` addresses, and there is
+        // nowhere else to read it from. ArcFace's batch axis really is called
+        // `None` — a PyTorch export artifact — and overriding a name the graph
+        // does not use is a silent no-op, so this has to be visible.
+        let spec = TensorSpec {
+            name: "input.1".into(),
+            dtype: "Float32".into(),
+            shape: vec![-1, 3, 112, 112],
+            symbols: vec!["None".into(), String::new(), String::new(), String::new()],
+        };
+        assert!(!spec.is_static());
+        assert!(spec.to_string().contains("?None"), "got {spec}");
     }
 
     #[test]
     fn a_rankless_tensor_is_not_static() {
         // An empty shape means ORT told us nothing useful; treating that as
         // "static" would let it silently reach DirectML at step 5.
-        let spec = TensorSpec { name: "x".into(), dtype: "Float32".into(), shape: vec![] };
+        let spec = TensorSpec {
+            name: "x".into(),
+            dtype: "Float32".into(),
+            shape: vec![],
+            symbols: vec![],
+        };
         assert!(!spec.is_static());
     }
 }

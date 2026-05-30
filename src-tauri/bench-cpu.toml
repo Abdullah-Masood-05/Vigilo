@@ -1,0 +1,17 @@
+# Force every model onto the CPU.
+#
+# The shipped default is DirectML for all five slots (rust_context.md §20), so
+# this is what you run to reproduce the CPU column of that comparison, or to
+# check whether a problem is GPU-specific:
+#
+#     detect-cli --config bench-cpu.toml bench --all --iters 50
+#     detect-cli --config bench-cpu.toml live --source camera:0
+#
+# The `EP` column in the bench table reports what each session actually got,
+# so this is verifiable rather than assumed.
+[runtime.providers]
+face = "cpu_only"
+pose = "cpu_only"
+gaze = "cpu_only"
+objects = "cpu_only"
+identity = "cpu_only"

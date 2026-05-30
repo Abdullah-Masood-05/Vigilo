@@ -779,8 +779,8 @@ fn bench_models(
          CPU execution provider. No preprocessing, no decode — a floor, not a budget.\n\n",
         cfg.runtime.warmup_iters
     ));
-    out.push_str("| model | MB | input | load ms | p50 ms | p95 ms | max ms |\n");
-    out.push_str("|---|---|---|---|---|---|---|\n");
+    out.push_str("| model | MB | input | EP | load ms | p50 ms | p95 ms | max ms |\n");
+    out.push_str("|---|---|---|---|---|---|---|---|\n");
 
     for path in &paths {
         match deepscreen_viewer::models::bench_model(path, &cfg.runtime, iters as u32) {
@@ -791,10 +791,11 @@ fn bench_models(
                     .map(|s| s.iter().map(|d| d.to_string()).collect::<Vec<_>>().join("x"))
                     .unwrap_or_default();
                 out.push_str(&format!(
-                    "| {} | {:.1} | {} | {:.0} | {:.2} | {:.2} | {:.2} |\n",
+                    "| {} | {:.1} | {} | {} | {:.0} | {:.2} | {:.2} | {:.2} |\n",
                     r.name,
                     r.size_bytes as f64 / 1_048_576.0,
                     shape,
+                    r.ep.as_str(),
                     r.load_ms,
                     r.latency.p50_us as f64 / 1000.0,
                     r.latency.p95_us as f64 / 1000.0,

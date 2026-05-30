@@ -610,7 +610,16 @@ pub struct RuntimeConfig {
     /// ORT's constant-cost parallelism model causes high latency variance;
     /// this switches to decreasing-granularity work claiming.
     pub dynamic_block_base: usize,
-    pub execution_provider: ExecutionProviderPref,
+    /// Which execution provider each model slot asks for.
+    ///
+    /// **Per model, not global, and that is the whole point.** EP dispatch has
+    /// a fixed per-inference cost, so a small graph can be measurably *slower*
+    /// on the GPU than on the CPU — the transfer and setup dominate work that
+    /// only took 1.5 ms to begin with. Head pose is the obvious candidate for
+    /// that; gaze and YOLOX are the obvious candidates to gain. The only way
+    /// to know is to measure each one on its own, which is why this is a map
+    /// rather than a switch.
+    pub providers: ModelProviders,
     /// First inference is much slower than steady state. Without warm-up the
     /// first real frame is an outlier and calibration starts on garbage timing.
     pub warmup_iters: u32,
@@ -636,7 +645,7 @@ impl Default for RuntimeConfig {
             intra_threads_large: 1,
             inter_threads: 1,
             dynamic_block_base: 4,
-            execution_provider: ExecutionProviderPref::default(),
+            providers: ModelProviders::default(),
             warmup_iters: 5,
             variant_bench_iters: 20,
             allow_spinning: false,
@@ -651,9 +660,82 @@ pub enum ExecutionProviderPref {
     /// DirectML first, CPU fallback. Runs on any DirectX 12 device, which
     /// includes the Intel/AMD integrated graphics an exam candidate actually
     /// has (MODELS.md §5.2).
-    #[default]
     DirectMlThenCpu,
+    #[default]
     CpuOnly,
+}
+
+/// Requested execution provider per model slot.
+///
+/// Defaults are **measured, not assumed** — see `rust_context.md` §20 for the
+/// per-model CPU-vs-DirectML numbers these came from. A slot defaulting to
+/// `CpuOnly` is a slot where the GPU lost.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct ModelProviders {
+    pub face: ExecutionProviderPref,
+    pub pose: ExecutionProviderPref,
+    pub gaze: ExecutionProviderPref,
+    pub objects: ExecutionProviderPref,
+    pub identity: ExecutionProviderPref,
+}
+
+impl Default for ModelProviders {
+    fn default() -> Self {
+        use ExecutionProviderPref::*;
+        // All five, because all five measured faster on DirectML — including
+        // the two that were expected to lose. Head pose is a 1.5 ms graph and
+        // the received wisdom is that dispatch overhead swamps work that small;
+        // it still went 1.49 -> 0.96 ms. The gains are not subtle anywhere:
+        // gaze 6.4x, ArcFace 10.8x, YOLOX 4.9x. See rust_context.md §20.
+        //
+        // Safe as a default because the fallback is real and tested: a machine
+        // with no DirectX 12 device logs one warning per session and runs on
+        // the CPU exactly as before.
+        Self {
+            face: DirectMlThenCpu,
+            pose: DirectMlThenCpu,
+            gaze: DirectMlThenCpu,
+            objects: DirectMlThenCpu,
+            identity: DirectMlThenCpu,
+        }
+    }
+}
+
+impl ModelProviders {
+    pub fn for_slot(&self, slot: ModelSlot) -> ExecutionProviderPref {
+        match slot {
+            ModelSlot::Face => self.face,
+            ModelSlot::Pose => self.pose,
+            ModelSlot::Gaze => self.gaze,
+            ModelSlot::Objects => self.objects,
+            ModelSlot::Identity => self.identity,
+        }
+    }
+}
+
+/// Which model is being built. Used to look up its provider and to name it in
+/// the startup log, so "which EP did this session actually get" is answerable
+/// per slot rather than for the process as a whole.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ModelSlot {
+    Face,
+    Pose,
+    Gaze,
+    Objects,
+    Identity,
+}
+
+impl ModelSlot {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            ModelSlot::Face => "face",
+            ModelSlot::Pose => "pose",
+            ModelSlot::Gaze => "gaze",
+            ModelSlot::Objects => "objects",
+            ModelSlot::Identity => "identity",
+        }
+    }
 }
 
 #[cfg(test)]
