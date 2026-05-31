@@ -141,12 +141,42 @@ pub struct CaptureConfig {
     /// ~55 MB/s over USB and caps you at the bus, not the model
     /// (MODELS.md §12).
     pub prefer_mjpeg: bool,
+    /// Which Windows capture API the in-process source asks for.
+    ///
+    /// Config rather than a rebuild, and that is the point of it. Webcam
+    /// vendors are inconsistent about which of the two APIs their driver
+    /// actually works with, and this ships to machines whose cameras nobody
+    /// here has ever seen. When a tester reports a black preview, this is the
+    /// first thing to change, and it has to be changeable by editing a file.
+    pub backend: CaptureBackend,
 }
 
 impl Default for CaptureConfig {
     fn default() -> Self {
-        Self { device_index: 0, width: 1280, height: 720, fps: 30, prefer_mjpeg: true }
+        Self {
+            device_index: 0,
+            width: 1280,
+            height: 720,
+            fps: 30,
+            prefer_mjpeg: true,
+            backend: CaptureBackend::default(),
+        }
     }
+}
+
+/// Windows capture API for the in-process camera source.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum CaptureBackend {
+    /// DirectShow — the default, and what the ffmpeg path used. Keeping it the
+    /// default is what makes the two comparable frame for frame.
+    #[default]
+    Dshow,
+    /// Media Foundation. The newer API, and the escape hatch for a camera
+    /// whose driver behaves badly under DirectShow. ffmpeg's Windows camera
+    /// input cannot reach this at all, which is most of why the capture path
+    /// moved in-process.
+    Msmf,
 }
 
 // ---------------------------------------------------------------------------

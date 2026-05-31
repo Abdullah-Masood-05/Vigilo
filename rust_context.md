@@ -1656,3 +1656,136 @@ violation that never fires:
   holding `0.436` where the evidence says `25` is how a unit mismatch survives
   review. Radians now exist only on the wire, converted once on ingest.
 - `identity.consecutive_failures` 2 → 3, for the reason in §19.2.
+
+---
+
+## 21. ccap-rs: built, measured, and deliberately not switched on
+
+Branch `ccap-capture`. The goal was to replace the ffmpeg camera subprocess
+with in-process capture via `ccap-rs`, removing 128 MB of bundled binaries and
+a process boundary.
+
+**Outcome: the path works and is committed, but `camera:0` still resolves to
+ffmpeg.** ccap measurably degrades detection on this hardware, and the evidence
+is below. It ships as `ccap:0`, unused by default, because two working backends
+and two documented API traps are worth keeping even unshipped.
+
+### 21.1 The comparison that decided it
+
+Three recordings, 600 frames each, same seat, same lighting, back to back. The
+middle row is the control that makes the result interpretable — ffmpeg forced
+to ccap's resolution, isolating "is it the capture library" from "is it 480p".
+
+| path | face rate | mean confidence | face box area | pose_yaw | gaze_yaw | gaze_pitch |
+|---|---|---|---|---|---|---|
+| ffmpeg 1280×720 | 100.0% | **0.920** | 41454 px² | −0.43 | −7.31 | +0.85 |
+| ffmpeg 640×480 *(control)* | 100.0% | **0.926** | 18501 px² | −6.21 | −13.61 | −0.43 |
+| ccap 640×480 | 98.5% | **0.782** | 20044 px² | −16.56 | −39.63 | −16.23 |
+
+**Read the confidence column first.** It is the one number here that does not
+depend on how the subject happened to be sitting. Dropping from 720p to 480p
+costs *nothing* — 0.920 versus 0.926, inside noise. Feeding the same 480p
+through ccap costs **0.14**. Resolution is exonerated; the capture library is
+not.
+
+The angle columns move too, and they drift a little between every recording
+because a person cannot hold a pose for two minutes across four takes — that is
+why they are not the basis of the decision. But the size of the ccap shift is
+not drift: gaze_pitch moves 16° from the control, which is larger than the
+entire camera-above-screen calibration offset §18.6 spent a whole section
+establishing. Something about these pixels is different, and a proctoring
+system whose gaze baseline moves by more than its calibration constant when you
+change capture library is not a system to ship.
+
+`gaze` and `pose` were also gated on 9 of 600 ccap frames and 0 of 600 on
+either ffmpeg run — consistent with the same underlying quality difference,
+since both gate on face score.
+
+**Most likely cause, untested:** YUV range. ccap's own source carries a
+`kPixelFormatFullRangeBit` that it masks off on Windows, and the two paths'
+channel means differ in the direction that implies — ffmpeg R/G/B
+96.5/91.9/92.6 against ccap 100.0/94.4/95.9, i.e. ccap slightly brighter
+overall. A limited-range YUV buffer expanded as though it were full-range (or
+the reverse) shifts contrast exactly this way, and would plausibly cost a face
+detector some confidence. Not chased — it is upstream behaviour, and the
+decision does not depend on which mechanism it is.
+
+### 21.2 Two API traps, both silent, both worth the trip on their own
+
+**Requesting RGB before opening the device gives you BGR.** `set_pixel_format`
+returns success either way. Ask before `open()` and frames arrive as `Bgr24`;
+ask after and they arrive as `Rgb24`. Nothing in the API distinguishes the two
+cases.
+
+This is precisely the failure class §6 records for YuNet's channel order: a
+swapped R and B does not crash, does not error, and does not look obviously
+wrong on a preview — it just quietly makes every model worse. It was caught on
+the first run only because the source checks `info.pixel_format` on **every**
+frame and refuses to continue rather than best-effort converting. That check
+paid for itself immediately and stays.
+
+**`get_property` reports what you asked for, not what you got.** The first
+version of this source logged a confident `1280x720` while the camera was
+delivering 640×480 — the discrepancy only surfaced when a saved PNG turned out
+to be the wrong size. The source now primes a real frame at startup and takes
+its geometry from `info`, so `resolution()` cannot lie to the preview's SVG
+viewBox.
+
+### 21.3 The resolution negotiation does not work
+
+The camera advertises `1280x720` in `supported_resolutions`. `set_resolution`
+returns `Ok`. Frames arrive at 640×480 regardless.
+
+Tried, all with the same result: before `open`, after `open`, before
+`start_capture`, opening via `open_with_index` rather than ccap's `open()`
+(which forwards index `-1` and discards the index the provider was built with),
+and under both Windows backends. Reading the C++ shows properties are cached on
+the provider and replayed onto the implementation via `applyCachedState`, so
+the ordering *should* work; empirically it does not on this driver.
+
+Worth revisiting if upstream fixes it. The source keeps both requests and warns
+loudly when the delivered geometry differs from the configured one, so a future
+version that starts honouring it will be obvious rather than silent.
+
+### 21.4 One trap that cost a confusing failure
+
+`Provider::get_devices()`, called before opening, **opens each device to
+interrogate it** and does not reliably release them. The subsequent open then
+fails with `Render stream failed` / `Failed to create DirectShow stream` —
+which reads like a driver fault and is nothing of the kind. Device
+capabilities are now read from `device_info()` on the already-open provider
+instead.
+
+### 21.5 What does work, and is why this is committed rather than reverted
+
+- **Both Windows backends produce frames.** `capture.backend = "dshow"` and
+  `"msmf"`, switchable from a config file. ffmpeg's Windows camera input is
+  DirectShow-only, so Media Foundation is a capability this project does not
+  otherwise have — and "the tester's webcam only works on the other API" is
+  exactly the failure a config switch exists for.
+- **In-process capture, ~31.5 fps**, against the ffmpeg baseline's 30.05. No
+  subprocess, no pipe, no stderr drain thread, no process reaping.
+- **Build cost is small**: `ccap-rs` compiles its C++ sources in ~23 s.
+- Device-busy errors map onto the existing plain-language "another process owns
+  the webcam" message.
+
+### 21.6 The build prerequisite this added, which the brief did not anticipate
+
+`ccap-rs` runs `bindgen` unconditionally — neither of its two features
+(`build-source`, `static-link`) skips it, and it ships no pre-generated
+bindings. **LLVM/libclang is therefore required to build this project at all**
+once the dependency is present, on top of the MSVC toolchain the brief
+correctly predicted. That is a real cost for CI and for anyone cloning this,
+and it is now paid on this branch whether or not ccap is used at runtime — the
+strongest argument for not merging as things stand.
+
+### 21.7 Status
+
+- `camera:0` → ffmpeg, unchanged. Bundled ffmpeg stays; nothing was stripped.
+- `ccap:0` → ccap, present and working, not used by default.
+- `capture.backend` config field added, used only by the ccap path.
+- Not merged to `main` or `gpu-directml`.
+
+Revisit when ccap honours resolution negotiation, or when someone establishes
+whether the confidence gap is the YUV range bit. Until then the ffmpeg path is
+measurably better on the only axis that matters.

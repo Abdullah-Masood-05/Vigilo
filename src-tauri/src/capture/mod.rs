@@ -6,6 +6,7 @@
 //! whole reason this crate has no Tauri dependency.
 
 pub mod camera;
+pub mod ccap_source;
 mod ffmpeg;
 pub mod replay;
 
@@ -148,7 +149,11 @@ pub trait FrameSource: Send {
 /// ```
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum SourceSpec {
+    /// ffmpeg subprocess, DirectShow. Kept for comparison and as the fallback
+    /// if the in-process path misbehaves on a given machine.
     Camera { index: u32 },
+    /// In-process capture via ccap. No subprocess, no bundled binaries.
+    Ccap { index: u32 },
     File { path: std::path::PathBuf },
     Dir { path: std::path::PathBuf },
 }
@@ -161,6 +166,12 @@ impl FromStr for SourceSpec {
             DetectError::source(s, "expected one of camera:<index>, file:<path>, dir:<path>")
         })?;
         match kind {
+            "ccap" => {
+                let index = rest.parse::<u32>().map_err(|_| {
+                    DetectError::source(s, format!("camera index must be a number, got {rest:?}"))
+                })?;
+                Ok(SourceSpec::Ccap { index })
+            }
             "camera" | "cam" => {
                 let index = rest.parse::<u32>().map_err(|_| {
                     DetectError::source(s, format!("camera index must be a number, got {rest:?}"))
@@ -171,7 +182,7 @@ impl FromStr for SourceSpec {
             "dir" => Ok(SourceSpec::Dir { path: rest.into() }),
             other => Err(DetectError::source(
                 s,
-                format!("unknown source kind {other:?}; expected camera, file or dir"),
+                format!("unknown source kind {other:?}; expected ccap, camera, file or dir"),
             )),
         }
     }
@@ -183,6 +194,11 @@ impl SourceSpec {
     /// benchmarking and recording, on when eyeballing a clip live.
     pub fn open(&self, capture: &CaptureConfig, paced: bool) -> Result<Box<dyn FrameSource>> {
         match self {
+            SourceSpec::Ccap { index } => {
+                let mut cfg = capture.clone();
+                cfg.device_index = *index;
+                ccap_source::CcapSource::open(&cfg).map(|s| Box::new(s) as Box<dyn FrameSource>)
+            }
             SourceSpec::Camera { index } => {
                 let mut cfg = capture.clone();
                 cfg.device_index = *index;
@@ -201,6 +217,7 @@ impl SourceSpec {
 impl std::fmt::Display for SourceSpec {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
+            SourceSpec::Ccap { index } => write!(f, "ccap:{index}"),
             SourceSpec::Camera { index } => write!(f, "camera:{index}"),
             SourceSpec::File { path } => write!(f, "file:{}", path.display()),
             SourceSpec::Dir { path } => write!(f, "dir:{}", path.display()),
