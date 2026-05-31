@@ -8,26 +8,8 @@ being there, or a phone appearing.
 It is early software. Some of it does not work yet, and that is what I am
 hoping you can help me find out.
 
-
-STEP 0 — INSTALL FFMPEG FIRST
------------------------------
-
-The app needs a free tool called ffmpeg to read your webcam. It is not
-included, and the app will not see your camera without it.
-
-  1. Open the Start menu, type "Terminal" (or "PowerShell"), and open it.
-  2. Copy this line, paste it in, and press Enter:
-
-         winget install --id Gyan.FFmpeg -e
-
-  3. Wait for it to finish. It may take a minute or two.
-  4. Close the terminal window.
-
-If that does not work, go to https://www.gyan.dev/ffmpeg/builds/ and download
-"release essentials", unzip it, and add its "bin" folder to your PATH.
-
-If you skip this step the app will still open and will tell you the same thing
-on screen. Nothing will break.
+There is nothing to install first. Everything it needs ships inside the
+installer.
 
 
 STEP 1 — INSTALL AND RUN

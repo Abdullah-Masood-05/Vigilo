@@ -28,8 +28,42 @@ use crate::types::Frame;
 /// through here; one that does not is a stray window on a tester's screen.
 ///
 /// No-op on non-Windows, where the whole problem does not exist.
+/// Directory holding the bundled `ffmpeg.exe` / `ffprobe.exe`, once located.
+///
+/// A process-wide static rather than something threaded through `Config`,
+/// because this is not a tunable — it is a fact about where this installation
+/// put its files, discovered once at startup by whoever knows about resource
+/// directories. The library still resolves nothing itself (MODELS.md §9): the
+/// app tells it, exactly as it does for model paths.
+static FFMPEG_DIR: std::sync::OnceLock<Option<std::path::PathBuf>> = std::sync::OnceLock::new();
+
+/// Point capture at a directory containing `ffmpeg.exe` and `ffprobe.exe`.
+///
+/// Call once, before opening any source. Later calls are ignored, so a stray
+/// second call cannot silently repoint a running pipeline at different
+/// binaries.
+pub fn set_ffmpeg_dir(dir: Option<std::path::PathBuf>) {
+    let _ = FFMPEG_DIR.set(dir);
+}
+
+/// Absolute path to a bundled helper, or `None` to fall back to `PATH`.
+///
+/// Bundled wins deliberately. A tester may well have some other ffmpeg on
+/// `PATH` — an ancient one, or a build without DirectShow — and "works on my
+/// machine but not theirs" traced to a stranger's ffmpeg version is not a bug
+/// anyone wants to debug remotely. The copy shipped alongside is the one that
+/// was tested.
+fn bundled(program: &str) -> Option<std::path::PathBuf> {
+    let dir = FFMPEG_DIR.get()?.as_ref()?;
+    let exe = dir.join(format!("{program}.exe"));
+    exe.exists().then_some(exe)
+}
+
 pub(crate) fn quiet_command(program: &str) -> std::process::Command {
-    let mut cmd = std::process::Command::new(program);
+    let mut cmd = match bundled(program) {
+        Some(path) => std::process::Command::new(path),
+        None => std::process::Command::new(program),
+    };
     #[cfg(windows)]
     {
         use std::os::windows::process::CommandExt;
@@ -41,7 +75,7 @@ pub(crate) fn quiet_command(program: &str) -> std::process::Command {
     cmd
 }
 
-/// Is ffmpeg reachable on `PATH`?
+/// Is ffmpeg usable — bundled or on `PATH`?
 ///
 /// Every source except `dir:` shells out to ffmpeg, so its absence is not a
 /// capture bug — it is a missing prerequisite, and the two need completely
@@ -49,8 +83,9 @@ pub(crate) fn quiet_command(program: &str) -> std::process::Command {
 /// DirectShow error over a black window, which tells them nothing they can act
 /// on.
 ///
-/// Checked before the pipeline starts rather than on first frame, so the app
-/// can say what is wrong instead of appearing to work and then not.
+/// Still checked even though the installer now ships its own copy: a build run
+/// from a source tree has no bundle, and an install with a deleted or blocked
+/// `ffmpeg/` folder should say so rather than fail at the first frame.
 pub fn ffmpeg_available() -> bool {
     binary_runs("ffmpeg") && binary_runs("ffprobe")
 }

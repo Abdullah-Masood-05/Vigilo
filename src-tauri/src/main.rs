@@ -169,6 +169,14 @@ fn main() {
             let model_dir = resolve_model_dir(&handle);
             tracing::info!(dir = ?model_dir, "model directory");
 
+            // Point capture at our own ffmpeg before anything opens a source.
+            // The library resolves nothing itself; the app knows where the
+            // resource directory is and tells it (MODELS.md §9), exactly as
+            // it does for models.
+            let ffmpeg_dir = resolve_ffmpeg_dir(&handle);
+            tracing::info!(dir = ?ffmpeg_dir, "ffmpeg directory");
+            deepscreen_viewer::capture::set_ffmpeg_dir(ffmpeg_dir);
+
             let preview_slot: PreviewSlot = Arc::new(ArcSwap::from_pointee(None));
             let preview_stats = Arc::new(PreviewStats::default());
 
@@ -255,6 +263,30 @@ fn resolve_model_dir(handle: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     candidates.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../models"));
 
     candidates.into_iter().find(|p| p.join("face_detection_yunet_2023mar.onnx").exists())
+}
+
+/// Where the bundled ffmpeg helpers live.
+///
+/// Same search order as [`resolve_model_dir`], and for the same reason: the
+/// resource directory once installed, then the development layouts so
+/// `cargo run` from the repo works with no build step.
+///
+/// `None` means fall back to whatever is on `PATH` — which is what a source
+/// checkout without a downloaded `ffmpeg/` folder does, and what the startup
+/// check then reports on if there is nothing there either.
+fn resolve_ffmpeg_dir(handle: &tauri::AppHandle) -> Option<std::path::PathBuf> {
+    let mut candidates: Vec<std::path::PathBuf> = Vec::new();
+    if let Ok(resource) = handle.path().resource_dir() {
+        candidates.push(resource.join("ffmpeg"));
+        // Tauri preserves the relative path of bundled resources, so a
+        // resource declared as `../ffmpeg/*` lands under `_up_/ffmpeg`.
+        candidates.push(resource.join("_up_").join("ffmpeg"));
+    }
+    candidates.push(std::path::PathBuf::from("ffmpeg"));
+    candidates.push(std::path::PathBuf::from("../ffmpeg"));
+    candidates.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ffmpeg"));
+
+    candidates.into_iter().find(|p| p.join("ffmpeg.exe").exists())
 }
 
 fn start_detector(

@@ -22,7 +22,7 @@ git clone https://github.com/Abdullah-Masood-05/deepscreen-viewer
 cd deepscreen-viewer
 
 bun install          # installs the Tauri CLI (see "About bun" below)
-# then download the models — see "Models", it is four curl commands
+# then fetch the models and ffmpeg — see the two sections below
 
 bun run dev          # run it
 bun run build        # build installers
@@ -51,19 +51,40 @@ If you have npm or pnpm instead, they work identically (`npm install`,
 | | Why | How to get it |
 |---|---|---|
 | **Rust 1.97+** | builds the app | [rustup.rs](https://rustup.rs) |
-| **ffmpeg + ffprobe on `PATH`** | **required** — the camera is read through ffmpeg's DirectShow input | `winget install --id Gyan.FFmpeg -e` |
+| ffmpeg | reads the webcam via DirectShow — **bundled in the installer**, only needed separately to build from source | see "ffmpeg" below |
 | WebView2 | renders the UI | preinstalled on Windows 10/11 |
 | bun *(optional)* | installs the Tauri CLI | [bun.sh](https://bun.sh) |
 
-**ffmpeg is not optional and is not bundled.** If it is missing the app opens
-and shows a full-screen instruction telling you how to install it, rather than
-a black window — but it will not capture until you do. Replacing the ffmpeg
-subprocess with a native capture crate is the main thing standing between this
-and a genuinely self-contained installer.
+**The installer has no prerequisites.** ffmpeg ships inside it, and the app
+prefers its own copy over anything on `PATH` — a stranger's ancient ffmpeg, or
+one built without DirectShow, is not a thing worth debugging remotely. If the
+bundled copy is missing *and* nothing is on `PATH` (a source checkout, say), the
+app opens and shows a full-screen instruction rather than a black window.
 
 Only one process may own a webcam on Windows. If OBS, Teams, Zoom, Discord or a
 browser tab is holding it, the app names the likely cause rather than showing a
 DirectShow error code.
+
+## ffmpeg
+
+Not committed — 128 MB of binaries. `cargo tauri build` bundles whatever is in
+`ffmpeg/` at the repository root, so put it there before building an installer:
+
+```bash
+curl -L -o ff.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl-shared.zip
+unzip -q ff.zip && mkdir -p ffmpeg
+cp ffmpeg-master-latest-win64-lgpl-shared/bin/{ffmpeg.exe,ffprobe.exe,*.dll} ffmpeg/
+cp ffmpeg-master-latest-win64-lgpl-shared/LICENSE.txt ffmpeg/LICENSE-ffmpeg.txt
+rm -f ffmpeg/ffplay.exe          # not used; 18 MB
+```
+
+**Use an LGPL build, not a GPL one.** This project is MIT and may need to ship
+commercially; GPL ffmpeg binaries would impose GPL obligations on anything
+distributing them. The BtbN `-lgpl-shared` build above is LGPL v3, and its
+licence text is bundled alongside the binaries. All seven DLLs are required —
+each was tested by removing it and confirming `ffmpeg -version` fails.
+
+For development you do not need this at all: anything on `PATH` works.
 
 ## Models
 
@@ -214,7 +235,9 @@ Stated plainly, because the HUD makes it look further along than it is:
   a face embedding is a data-protection decision, not a convenience.
 - **No session report is written to disk yet**, no evidence capture, no
   calibration UI.
-- ffmpeg is an external dependency, as above.
+- ffmpeg is a subprocess, not a linked library. Replacing it with a native
+  capture crate would drop ~128 MB from the installer and remove a process
+  boundary from the capture path.
 
 ## Licence
 
