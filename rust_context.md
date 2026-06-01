@@ -1656,3 +1656,257 @@ violation that never fires:
   holding `0.436` where the evidence says `25` is how a unit mismatch survives
   review. Radians now exist only on the wire, converted once on ingest.
 - `identity.consecutive_failures` 2 → 3, for the reason in §19.2.
+
+---
+
+## 22. A minimal ffmpeg, built from source and committed
+
+Branch `ffmpeg-minimal`. Same goal as §21 — stop shipping 128 MB of ffmpeg for
+a capture path that uses perhaps a dozen of its hundreds of components — but
+via a custom build of the identical upstream source rather than a different
+capture library. Where ccap traded detection quality for size and lost, this
+trades nothing: same ffmpeg, same DirectShow path, only unused code removed.
+
+**Outcome: shipped.** `ffmpeg/ffmpeg.exe`, 1.7 MB, statically linked, committed
+via git-lfs. `main`'s 128 MB bundle is gone.
+
+### 22.1 What the capture path actually calls
+
+Established by reading the code, not by guessing, because guessing is how a
+build ends up missing something it needed:
+
+- **Camera capture**: `ffmpeg -f dshow -rtbufsize 128M [-vcodec mjpeg] -video_size WxH -framerate FPS -i video=<device> -f rawvideo -pix_fmt rgb24 -an -sn pipe:1` — DirectShow in, MJPEG decode, raw RGB24 over stdout.
+- **Device enumeration**: `ffmpeg -f dshow -list_devices true -i dummy`. Still `ffmpeg`, not `ffprobe`.
+- **`ffprobe` is not called anywhere on the camera path.** It exists solely for `file:` replay's dimension probe in `replay.rs`, and that source is development-only — never reached through the installed app's default launch.
+
+So the build target was `ffmpeg.exe` alone, and `ffmpeg_available()`'s startup
+gate was narrowed to match: it now checks only that `ffmpeg` runs, not
+`ffmpeg` *and* `ffprobe`. Checking for a binary the installer no longer ships
+would have failed every fresh install for a dependency the camera path never
+touches.
+
+### 22.2 The configure line
+
+FFmpeg `n7.1.1`, MSYS2 + mingw-w64-x86_64-gcc, nasm, pkg-config, make. Full
+build, clean, no reconfigure: **39 seconds.**
+
+```
+./configure \
+  --disable-all \
+  --enable-cross-compile --arch=x86_64 --target-os=mingw32 \
+  --enable-ffmpeg \
+  --enable-avdevice --enable-avcodec --enable-avformat --enable-avutil \
+  --enable-avfilter --enable-swscale \
+  --enable-indev=dshow \
+  --enable-decoder=mjpeg,rawvideo \
+  --enable-encoder=rawvideo \
+  --enable-muxer=rawvideo \
+  --enable-demuxer=rawvideo \
+  --enable-protocol=pipe \
+  --enable-parser=mjpeg \
+  --enable-filter=scale \
+  --disable-iconv --disable-zlib --disable-schannel \
+  --enable-small \
+  --disable-doc --disable-ffplay --disable-ffprobe \
+  --disable-network \
+  --disable-debug \
+  --pkg-config=pkg-config \
+  --extra-ldflags="-static"
+```
+
+`--disable-all`, not `--disable-everything` — the FFmpeg maintainers are
+explicit that the latter is a debug option that does not do what it sounds
+like, and it is what nearly every blog post online gets wrong.
+
+License: **LGPL version 2.1 or later**, confirmed from the configure summary.
+No `--enable-gpl`, no `--enable-nonfree`. Licence text ships in
+`ffmpeg/LICENSE-ffmpeg.txt`.
+
+### 22.3 Three things that were not obvious from the option list
+
+**`--enable-ffmpeg` is required, and `--disable-all` silently removes it.**
+`--disable-all` disables `$LIBRARY_LIST $PROGRAM_LIST doc` outright — the
+*program*, not just components. Without `--enable-ffmpeg` the whole library
+set builds correctly and `make` reports `No rule to make target 'ffmpeg'`,
+because `CONFIG_FFMPEG` is `0` and the fftools Makefile never registers the
+target. Should have been obvious from `--disable-all`'s own name; wasn't,
+until the build said so.
+
+**The `ffmpeg` program hard-depends on `avfilter`, unconditionally.**
+`configure`'s own dependency line says why: `ffmpeg_deps="avcodec avfilter
+avformat threads"`. This holds even though nothing in the actual capture
+command line names a filter — the CLI tool's internal architecture routes
+every stream through a filtergraph whether or not `-vf` is ever passed.
+Skipping `avfilter` produces the same "no rule to make target" failure as
+skipping `--enable-ffmpeg`, for a different reason, with an identical symptom.
+
+**`--enable-swscale` is not sufficient for pixel-format conversion — the CLI
+also needs the `scale` *filter*.** The library and the filter are different
+components with different enable flags. The first real capture attempt failed
+with `'scale' filter not present, cannot convert formats`, despite swscale
+being enabled exactly as instructed. `ffmpeg.exe`'s auto-insert logic that
+bridges a decoder's native pixel format to the requested output format goes
+through the filtergraph, not through a direct library call — so the filter is
+what the CLI needs even when no filter is named on the command line. Once
+`--enable-filter=scale` was added, capture worked immediately.
+
+None of these produced a wrong result — every one was a hard build failure,
+caught before anything shipped. The category of bug this build effort could
+have introduced silently was pixel handling, and that is what §22.5 exists to
+rule out.
+
+### 22.4 The dependency this "single small binary" almost shipped with
+
+The first successful build passed every functional test and was **not**
+actually static. `objdump -p` on it showed three external DLLs beyond Windows
+system libraries: `libiconv-2.dll`, `libwinpthread-1.dll`, `zlib1.dll` — none
+used by anything this build enables. `configure`'s own summary had said so
+plainly (`External libraries: iconv schannel / mediafoundation zlib`) and it
+was read past.
+
+The failure mode this produces is specific and worth naming: the binary runs
+perfectly from a shell that happens to have MSYS2's `/mingw64/bin` on `PATH`
+(where it was built and first tested), and fails with exit code `0xC0000135`
+— `STATUS_DLL_NOT_FOUND` — everywhere else, including the actual installed
+app, because Windows' DLL search order does not include the mingw toolchain
+directory. **The first fresh-machine test in §22.6 caught this, on the first
+attempt** — the installed app tried to enumerate devices, DirectShow silently
+failed to launch the ffmpeg child, and the error surfaced as the ordinary
+"no video capture devices found" message rather than as a loader error,
+because the process never got far enough to print one.
+
+Fixed with `--disable-iconv --disable-zlib --disable-schannel` (none needed;
+`iconv` is for text/subtitle charset conversion, `zlib` for optional codec
+compression, `schannel` for network TLS — this build has no network, no
+subtitles, no compressed containers) and `--extra-ldflags="-static"`, which
+statically links the mingw runtime. `objdump -p` afterward shows only
+`bcrypt`, `KERNEL32`, `msvcrt`, `ole32`, `OLEAUT32`, `SHELL32`, `SHLWAPI`,
+`USER32` — every one a Windows system DLL guaranteed present on any Windows
+install. Confirmed by running the rebuilt binary from a plain PowerShell
+session with MSYS2 and mingw both absent from `PATH`.
+
+**The general form of this bug is worth keeping in mind past this one build**:
+a configure summary reporting "static yes" describes whether *this project's
+own libraries* link statically into the executable, not whether the toolchain
+runtime itself is static. Those are different questions, and only the second
+one determines whether the binary needs anything installed on the machine
+that runs it.
+
+### 22.5 Equivalence, measured the same way §21 measured ccap
+
+Same protocol: 600 frames each, same seat, same lighting, back to back,
+through the app's own detect-cli.
+
+| build | face rate | mean confidence | pose_yaw | gaze_yaw | gaze_pitch |
+|---|---|---|---|---|---|
+| full bundled ffmpeg (128 MB, prebuilt LGPL) | 100.0% | **0.8937** | −4.48 | −42.66 | −15.41 |
+| minimal custom build (~1.7 MB) | 96.7% | **0.8688** | −7.15 | −45.29 | −16.09 |
+
+Confidence delta: **−0.025**. Against §21's alarm threshold — ccap's −0.14 —
+this is 5.6× smaller, and the explicit criterion going in was "any drop like
+ccap's means investigate; a small gap is noise."
+
+It was not accepted on the confidence number alone, because two other things
+moved alongside it that a posture difference alone would not obviously
+explain: pose_yaw standard deviation nearly tripled (2.96° → 9.73°), and
+`SlotState::SkippedGated` appeared on 20–26 frames where the full-ffmpeg run
+had zero. Rather than wave that away, a pixel-level check independent of
+sitting posture: two saved frames, one per build, channel means compared
+directly.
+
+```
+full     1280x720  meanR=63.50  meanG=57.25  meanB=57.35
+minimal  1280x720  meanR=63.00  meanG=56.53  meanB=56.78
+```
+
+Sub-1-unit differences on every channel — no colour-range shift, no channel
+swap, nothing a pixel-format bug would produce. **The pose_yaw variance and
+the gating are session-to-session posture variance**, the same effect §21
+noted and discounted for its own control row: nobody holds a pose identically
+across two separate seated recordings taken minutes apart. The pixel evidence
+is what makes that conclusion safe rather than convenient.
+
+Capture and detect timing, same protocol, same seat:
+
+| build | capture fps | detect p50 | detect p95 |
+|---|---|---|---|
+| full bundled ffmpeg | 30.20 | 19.42 ms | 22.33 ms |
+| minimal custom build | 30.20 | 19.20 ms | 22.26 ms |
+
+Statistically identical, as expected — the subprocess and pipe overhead this
+was never trying to remove is a few percent of a few milliseconds against a
+~20 ms model-inference floor.
+
+### 22.6 Fresh-machine test, and the one that failed first
+
+Installed from the built NSIS installer to `%LOCALAPPDATA%`, launched with
+`ffmpeg`, MSYS2 and mingw all absent from `PATH`.
+
+**First attempt failed** — this is §22.4's DLL dependency, caught in exactly
+the scenario it was worth testing for. Killed the stray process, confirmed no
+camera-holding process was the actual cause by re-testing clean, traced it to
+`STATUS_DLL_NOT_FOUND`, fixed the link, rebuilt, reinstalled clean.
+
+**Second attempt, after the static-link fix:**
+
+```
+INFO ffmpeg directory dir=Some("...\AppData\Local\DeepScreen Viewer\_up_\ffmpeg")
+INFO face model ready ...
+INFO gaze model ready ...
+INFO head pose model ready ...
+INFO object model ready ...
+INFO identity model ready ...
+INFO preview stream on http://127.0.0.1:.../stream
+```
+
+All five models loaded, capture started, and the OS-level process list
+confirmed the running `ffmpeg.exe` was the installer's own bundled copy at
+`_up_\ffmpeg\ffmpeg.exe` — not a PATH fallback, because there was nothing on
+`PATH` to fall back to.
+
+### 22.7 Everything else in the ship gate
+
+- **`file:` replay** still works with a full ffmpeg + ffprobe on `PATH` — 60
+  frames decoded from `samples/_smoke_testsrc.mp4` through `detect-cli`.
+- **`dir:` replay** needs no ffmpeg at all, confirmed unaffected.
+- **Camera-busy**: a second `detect-cli` instance against an already-open
+  camera produced the existing plain-language "Windows lets exactly one
+  process own a webcam" message — no panic, no hang.
+- **No such device**: `camera:5` against a 2-device machine listed what
+  actually exists rather than failing opaquely.
+- **Path with a space**: the installed app's own files (exe, `_up_/models`,
+  `_up_/ffmpeg`) copied to `C:\Test Folder\app\` and launched from there.
+  Model directory and ffmpeg directory both resolved correctly; all five
+  models loaded.
+- **`cargo test`**: 91 passed, unchanged — this work touched no model,
+  fusion or pipeline code, only the capture module's ffmpeg-availability gate
+  and the bundled binary itself. `cargo clippy --all-targets --features cli`:
+  silent.
+
+### 22.8 Sizes
+
+| | before (full LGPL bundle) | after (minimal build) |
+|---|---|---|
+| `ffmpeg/` payload | 128 MB | **1.7 MB** |
+| NSIS installer | 76.7 MB | **34.8 MB** |
+| MSI installer | 94.3 MB | **38.7 MB** |
+
+### 22.9 Distribution
+
+Unlike the model weights, the minimal `ffmpeg.exe` is **committed to the repo
+via git-lfs** rather than fetched at build time. That was the point of Step 3:
+build once, and nobody after this — not CI, not a future clone, not
+`DeepScreen-DesktopApp`'s eventual integration — needs MSYS2 again. A
+generic prebuilt download would have defeated that; this build is specific to
+exactly the components this project's capture path uses, and reproducing it
+from a different source would risk re-hitting every trap in §22.3–22.4 for no
+reason.
+
+### 22.10 What this did not touch
+
+No model, fusion, or threshold change. No `DeepScreen-DesktopApp`. The
+`detect-cli` bundle exclusion and `strip = true` / `lto = true` release
+profile were already in place on `main` from earlier work — nothing to add
+there. `capture.rs`'s only source change is the narrowed `ffmpeg_available()`
+check described in §22.1; the DirectShow command lines themselves are
+byte-identical to what shipped before.
