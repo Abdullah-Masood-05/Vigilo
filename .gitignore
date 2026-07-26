@@ -22,7 +22,10 @@ CLAUDE.md
 # bun/npm only ever install the Tauri CLI here; the front end has no deps.
 /node_modules
 
-# ffmpeg binaries are bundled at build time, not committed — 128 MB, and the
-# same reasoning as the model weights above. See README.md for the download.
-/ffmpeg/*.exe
-/ffmpeg/*.dll
+# ffmpeg is a custom minimal build (~1.7 MB, camera capture only — no
+# ffprobe, no DLLs, statically linked), committed via git-lfs rather than
+# downloaded at build time. See rust_context.md §22 for why: unlike the model
+# weights above, this is small enough and specific enough to this project's
+# capture path that fetching a generic prebuilt release would defeat the
+# point of building it minimal in the first place. `ffmpeg/ffmpeg.exe` is
+# therefore intentionally NOT listed here.

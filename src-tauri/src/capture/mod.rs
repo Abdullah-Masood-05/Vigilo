@@ -75,19 +75,20 @@ pub(crate) fn quiet_command(program: &str) -> std::process::Command {
     cmd
 }
 
-/// Is ffmpeg usable — bundled or on `PATH`?
+/// Is `ffmpeg` itself usable — bundled or on `PATH`?
 ///
-/// Every source except `dir:` shells out to ffmpeg, so its absence is not a
-/// capture bug — it is a missing prerequisite, and the two need completely
-/// different messages. Without this check the first thing a new user sees is a
-/// DirectShow error over a black window, which tells them nothing they can act
-/// on.
+/// **Deliberately does not check `ffprobe`.** The camera path — what every
+/// installed copy of this app actually uses — never calls it; only `file:`
+/// replay does, to read a clip's dimensions, and that is a development-only
+/// source never exposed through the installed app's normal launch. Since
+/// §22's minimal build ships `ffmpeg.exe` alone, requiring `ffprobe` here
+/// would fail every fresh install for a binary the camera path never touches.
 ///
-/// Still checked even though the installer now ships its own copy: a build run
-/// from a source tree has no bundle, and an install with a deleted or blocked
-/// `ffmpeg/` folder should say so rather than fail at the first frame.
+/// Still checked even though the installer ships its own `ffmpeg.exe`: a build
+/// run from a source tree has no bundle, and an install with a deleted or
+/// blocked `ffmpeg/` folder should say so rather than fail at the first frame.
 pub fn ffmpeg_available() -> bool {
-    binary_runs("ffmpeg") && binary_runs("ffprobe")
+    binary_runs("ffmpeg")
 }
 
 fn binary_runs(name: &str) -> bool {

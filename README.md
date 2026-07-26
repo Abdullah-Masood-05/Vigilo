@@ -51,7 +51,7 @@ If you have npm or pnpm instead, they work identically (`npm install`,
 | | Why | How to get it |
 |---|---|---|
 | **Rust 1.97+** | builds the app | [rustup.rs](https://rustup.rs) |
-| ffmpeg | reads the webcam via DirectShow — **bundled in the installer**, only needed separately to build from source | see "ffmpeg" below |
+| ffmpeg | reads the webcam via DirectShow — **committed to the repo**, nothing to fetch | see "ffmpeg" below |
 | WebView2 | renders the UI | preinstalled on Windows 10/11 |
 | bun *(optional)* | installs the Tauri CLI | [bun.sh](https://bun.sh) |
 
@@ -67,24 +67,32 @@ DirectShow error code.
 
 ## ffmpeg
 
-Not committed — 128 MB of binaries. `cargo tauri build` bundles whatever is in
-`ffmpeg/` at the repository root, so put it there before building an installer:
+`ffmpeg/ffmpeg.exe` is **committed** (via git-lfs) — a custom minimal build,
+camera capture only, ~1.7 MB, fully static (no companion DLLs). `git clone`
+gets you a working binary with nothing to fetch and no build toolchain to
+install. `cargo tauri build` bundles it as-is.
 
-```bash
-curl -L -o ff.zip https://github.com/BtbN/FFmpeg-Builds/releases/download/latest/ffmpeg-master-latest-win64-lgpl-shared.zip
-unzip -q ff.zip && mkdir -p ffmpeg
-cp ffmpeg-master-latest-win64-lgpl-shared/bin/{ffmpeg.exe,ffprobe.exe,*.dll} ffmpeg/
-cp ffmpeg-master-latest-win64-lgpl-shared/LICENSE.txt ffmpeg/LICENSE-ffmpeg.txt
-rm -f ffmpeg/ffplay.exe          # not used; 18 MB
-```
+It configures `--disable-all` and enables exactly: `avdevice`/`dshow` (the
+camera), `avcodec` with the `mjpeg`/`rawvideo` decoders, `avformat` with the
+`rawvideo` muxer, `avfilter` with only the `scale` filter (needed for the
+pixel-format conversion `ffmpeg.exe`'s own CLI machinery requires — the
+`swscale` library alone is not enough), and the `pipe` protocol. No network,
+no doc, no `ffplay`, no `ffprobe` — the camera path never calls `ffprobe`;
+only `file:`/`dir:` replay does, and that is dev-only. `--extra-ldflags=-static`
+removes the mingw runtime DLLs (`libwinpthread-1.dll` and friends) a default
+build would otherwise depend on.
 
-**Use an LGPL build, not a GPL one.** This project is MIT and may need to ship
-commercially; GPL ffmpeg binaries would impose GPL obligations on anything
-distributing them. The BtbN `-lgpl-shared` build above is LGPL v3, and its
-licence text is bundled alongside the binaries. All seven DLLs are required —
-each was tested by removing it and confirming `ffmpeg -version` fails.
+**LGPL, not GPL.** This project is MIT and may need to ship commercially; a
+GPL ffmpeg build would impose GPL obligations on anything distributing it. The
+default configure is LGPL 2.1+ with none of the GPL/nonfree flags — the
+licence text ships alongside the binary. Full detail, including the exact
+configure line and the equivalence measurements against a full LGPL build, is
+in `rust_context.md` §22.
 
-For development you do not need this at all: anything on `PATH` works.
+Rebuilding it needs MSYS2 with mingw-w64, nasm and pkg-config — a one-time
+cost on whoever's machine builds it, not a permanent project dependency, since
+the output is committed. For development you do not need any of this: `file:`
+and `dir:` replay sources use whatever `ffmpeg`/`ffprobe` are on `PATH`.
 
 ## Models
 
