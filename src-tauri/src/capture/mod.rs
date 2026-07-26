@@ -15,6 +15,32 @@ use crate::config::CaptureConfig;
 use crate::error::{DetectError, Result};
 use crate::types::Frame;
 
+/// Spawn a helper process without letting Windows pop a console window for it.
+///
+/// `ffmpeg` and `ffprobe` are console subsystem executables. The app is a GUI
+/// process (`windows_subsystem = "windows"`), so it has no console of its own
+/// — and when a GUI process starts a console child, Windows helpfully
+/// **allocates a new console window** for it. The result is a black terminal
+/// appearing next to the app, once per probe and once per capture session,
+/// which looks exactly like a crash to anyone who did not write this.
+///
+/// `CREATE_NO_WINDOW` suppresses that. Every `Command` in this module must go
+/// through here; one that does not is a stray window on a tester's screen.
+///
+/// No-op on non-Windows, where the whole problem does not exist.
+pub(crate) fn quiet_command(program: &str) -> std::process::Command {
+    let mut cmd = std::process::Command::new(program);
+    #[cfg(windows)]
+    {
+        use std::os::windows::process::CommandExt;
+        /// `CREATE_NO_WINDOW`, from `winbase.h`. Spelled out rather than
+        /// pulling in the `windows-sys` crate for one constant.
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        cmd.creation_flags(CREATE_NO_WINDOW);
+    }
+    cmd
+}
+
 /// Is ffmpeg reachable on `PATH`?
 ///
 /// Every source except `dir:` shells out to ffmpeg, so its absence is not a
@@ -30,7 +56,7 @@ pub fn ffmpeg_available() -> bool {
 }
 
 fn binary_runs(name: &str) -> bool {
-    std::process::Command::new(name)
+    quiet_command(name)
         .arg("-version")
         .stdout(std::process::Stdio::null())
         .stderr(std::process::Stdio::null())

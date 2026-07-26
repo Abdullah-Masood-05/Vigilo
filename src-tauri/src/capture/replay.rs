@@ -11,7 +11,6 @@
 //! decoding speed is not what we are measuring.
 
 use std::path::{Path, PathBuf};
-use std::process::Command;
 use std::sync::Arc;
 use std::time::Instant;
 
@@ -44,7 +43,7 @@ impl VideoFileSource {
 
         let probe = probe_video(&path)?;
 
-        let mut cmd = Command::new("ffmpeg");
+        let mut cmd = super::quiet_command("ffmpeg");
         cmd.args(["-v", "error", "-nostdin", "-i"]).arg(&path);
 
         // End of file is the expected way a clip finishes, so EOF is not an
@@ -94,7 +93,7 @@ struct VideoProbe {
 }
 
 fn probe_video(path: &Path) -> Result<VideoProbe> {
-    let out = Command::new("ffprobe")
+    let out = super::quiet_command("ffprobe")
         .args([
             "-v",
             "error",
