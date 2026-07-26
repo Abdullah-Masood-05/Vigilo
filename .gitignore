@@ -21,3 +21,8 @@ CLAUDE.md
 
 # bun/npm only ever install the Tauri CLI here; the front end has no deps.
 /node_modules
+
+# ffmpeg binaries are bundled at build time, not committed — 128 MB, and the
+# same reasoning as the model weights above. See README.md for the download.
+/ffmpeg/*.exe
+/ffmpeg/*.dll
