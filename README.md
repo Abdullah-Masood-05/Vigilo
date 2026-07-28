@@ -36,6 +36,8 @@ cargo run --release
 cargo tauri build            # needs: cargo install tauri-cli --version "^2"
 ```
 
+macOS support is tracked in the [`macos-support`](https://github.com/Abdullah-Masood-05/deepscreen-viewer/tree/macos-support) branch. Pre-built macOS builds are available on [EbadJunaid's fork releases](https://github.com/EbadJunaid/deepscreen-viewer/releases).
+
 ### macOS
 
 On macOS, the app uses ffmpeg with the **AVFoundation** backend for camera
