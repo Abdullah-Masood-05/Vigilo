@@ -286,11 +286,7 @@ fn resolve_ffmpeg_dir(handle: &tauri::AppHandle) -> Option<std::path::PathBuf> {
     candidates.push(std::path::PathBuf::from("../ffmpeg"));
     candidates.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ffmpeg"));
 
-    candidates.into_iter().find(|p| p.join(ffmpeg_binary_name()).exists())
-}
-
-fn ffmpeg_binary_name() -> &'static str {
-    if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" }
+    candidates.into_iter().find(|p| p.join("ffmpeg.exe").exists())
 }
 
 fn start_detector(

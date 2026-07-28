@@ -55,16 +55,11 @@ pub fn set_ffmpeg_dir(dir: Option<std::path::PathBuf>) {
 /// was tested.
 fn bundled(program: &str) -> Option<std::path::PathBuf> {
     let dir = FFMPEG_DIR.get()?.as_ref()?;
-    let exe = dir.join(if cfg!(windows) {
-        format!("{program}.exe")
-    } else {
-        program.to_string()
-    });
+    let exe = dir.join(format!("{program}.exe"));
     exe.exists().then_some(exe)
 }
 
 pub(crate) fn quiet_command(program: &str) -> std::process::Command {
-    #[allow(unused_mut)]
     let mut cmd = match bundled(program) {
         Some(path) => std::process::Command::new(path),
         None => std::process::Command::new(program),

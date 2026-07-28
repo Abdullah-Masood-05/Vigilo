@@ -21,40 +21,20 @@ produce an alert.
 git clone https://github.com/Abdullah-Masood-05/deepscreen-viewer
 cd deepscreen-viewer
 
-npm install          # installs the Tauri CLI (bun works too — see "About bun")
-# then fetch the models, and on macOS install ffmpeg — see sections below
+bun install          # installs the Tauri CLI (see "About bun" below)
+# then fetch the models and ffmpeg — see the two sections below
 
-npm run dev          # run it
-npm run build        # build installers
+bun run dev          # run it
+bun run build        # build installers
 ```
 
-If you would rather not use npm, everything works through cargo alone:
+If you would rather not use bun, everything works through cargo alone:
 
 ```bash
 cd src-tauri
 cargo run --release
 cargo tauri build            # needs: cargo install tauri-cli --version "^2"
 ```
-
-### macOS
-
-On macOS, the app uses ffmpeg with the **AVFoundation** backend for camera
-capture. Install it via Homebrew before running:
-
-```bash
-brew install ffmpeg
-```
-
-Then from the repository root:
-
-```bash
-npm install
-cargo run --release                    # opens camera:0
-cargo run --release -- --source "file:samples/_smoke_testsrc.mp4"  # test with video
-```
-
-Camera access requires macOS permission — the first launch will prompt you to
-allow Terminal (or the app) in **System Settings > Privacy & Security > Camera**.
 
 ### About bun
 
@@ -71,52 +51,48 @@ If you have npm or pnpm instead, they work identically (`npm install`,
 | | Why | How to get it |
 |---|---|---|
 | **Rust 1.97+** | builds the app | [rustup.rs](https://rustup.rs) |
-| ffmpeg | reads the webcam — **Windows**: DirectShow (bundled), **macOS**: AVFoundation via Homebrew | see "ffmpeg" below |
-| WebView2 / WebKit | renders the UI | preinstalled on Windows 10/11 (WebView2) and macOS (WebKit) |
+| ffmpeg | reads the webcam via DirectShow — **committed to the repo**, nothing to fetch | see "ffmpeg" below |
+| WebView2 | renders the UI | preinstalled on Windows 10/11 |
 | bun *(optional)* | installs the Tauri CLI | [bun.sh](https://bun.sh) |
 
-**The installer has no prerequisites.** On Windows, ffmpeg ships inside it, and the app
+**The installer has no prerequisites.** ffmpeg ships inside it, and the app
 prefers its own copy over anything on `PATH` — a stranger's ancient ffmpeg, or
 one built without DirectShow, is not a thing worth debugging remotely. If the
 bundled copy is missing *and* nothing is on `PATH` (a source checkout, say), the
 app opens and shows a full-screen instruction rather than a black window.
 
-On macOS, ffmpeg is expected on `PATH` (via Homebrew: `brew install ffmpeg`).
-
-Only one process may own a webcam. If another app is holding it (OBS, Teams,
-Zoom, Discord, Photo Booth, FaceTime, or a browser tab), the app names the
-likely cause rather than showing a raw error code.
+Only one process may own a webcam on Windows. If OBS, Teams, Zoom, Discord or a
+browser tab is holding it, the app names the likely cause rather than showing a
+DirectShow error code.
 
 ## ffmpeg
 
-Camera capture uses ffmpeg as a subprocess on both platforms:
-
-**Windows** — `ffmpeg/ffmpeg.exe` is **committed** (via git-lfs), a custom
-minimal DirectShow build ~1.7 MB, fully static. `git clone` gets you a working
-binary with nothing to fetch. `cargo tauri build` bundles it as-is.
+`ffmpeg/ffmpeg.exe` is **committed** (via git-lfs) — a custom minimal build,
+camera capture only, ~1.7 MB, fully static (no companion DLLs). `git clone`
+gets you a working binary with nothing to fetch and no build toolchain to
+install. `cargo tauri build` bundles it as-is.
 
 It configures `--disable-all` and enables exactly: `avdevice`/`dshow` (the
 camera), `avcodec` with the `mjpeg`/`rawvideo` decoders, `avformat` with the
-`rawvideo` muxer, `avfilter` with only the `scale` filter, and the `pipe`
-protocol. **LGPL, not GPL.** See `rust_context.md` §22 for details.
+`rawvideo` muxer, `avfilter` with only the `scale` filter (needed for the
+pixel-format conversion `ffmpeg.exe`'s own CLI machinery requires — the
+`swscale` library alone is not enough), and the `pipe` protocol. No network,
+no doc, no `ffplay`, no `ffprobe` — the camera path never calls `ffprobe`;
+only `file:`/`dir:` replay does, and that is dev-only. `--extra-ldflags=-static`
+removes the mingw runtime DLLs (`libwinpthread-1.dll` and friends) a default
+build would otherwise depend on.
 
-Rebuilding the Windows binary needs MSYS2 with mingw-w64, nasm and
-pkg-config — not needed for development.
+**LGPL, not GPL.** This project is MIT and may need to ship commercially; a
+GPL ffmpeg build would impose GPL obligations on anything distributing it. The
+default configure is LGPL 2.1+ with none of the GPL/nonfree flags — the
+licence text ships alongside the binary. Full detail, including the exact
+configure line and the equivalence measurements against a full LGPL build, is
+in `rust_context.md` §22.
 
-**macOS** — the system ffmpeg (from Homebrew) is used with the **AVFoundation**
-backend. No custom build is needed:
-
-```bash
-brew install ffmpeg
-```
-
-The camera source auto-detects the platform and uses the correct ffmpeg input
-format (`dshow` on Windows, `avfoundation` on macOS). Device enumeration,
-camera index selection, and the RGB pipe infrastructure work identically on
-both platforms.
-
-For development, `file:` and `dir:` replay sources use whatever `ffmpeg`/
-`ffprobe` are on `PATH` regardless of platform.
+Rebuilding it needs MSYS2 with mingw-w64, nasm and pkg-config — a one-time
+cost on whoever's machine builds it, not a permanent project dependency, since
+the output is committed. For development you do not need any of this: `file:`
+and `dir:` replay sources use whatever `ffmpeg`/`ffprobe` are on `PATH`.
 
 ## Models
 
@@ -211,7 +187,7 @@ Rules that hold throughout:
 
 ```bash
 cd src-tauri
-cargo test --release          # 121+ tests, no camera or models required
+cargo test --release          # 119 tests, no camera or models required
 cargo clippy --all-targets
 ```
 
@@ -251,17 +227,6 @@ Intel i7-11850H, CPU execution provider, release build.
 Measured over a ten-minute live session with a face present throughout. Full
 methodology and the per-slot coverage breakdown are in `rust_context.md` §18.
 
-## Platform support
-
-| Feature | Windows | macOS |
-|---|---|---|
-| Camera capture | DirectShow (bundled ffmpeg) | AVFoundation (Homebrew ffmpeg) |
-| Device enumeration | ✅ `detect-cli devices` | ✅ via AVFoundation |
-| Format listing | ✅ `detect-cli devices --formats` | ❌ (AVFoundation does not expose format listing) |
-| File/dir replay | ✅ | ✅ |
-| Model inference | ✅ (CPU / ONNX Runtime) | ✅ (CPU / ONNX Runtime, Apple Silicon) |
-| Build target | `.msi` / `.exe` | `.dmg` / `.app` |
-
 ## Known limitations
 
 Stated plainly, because the HUD makes it look further along than it is:
@@ -281,9 +246,6 @@ Stated plainly, because the HUD makes it look further along than it is:
 - ffmpeg is a subprocess, not a linked library. Replacing it with a native
   capture crate would drop ~128 MB from the installer and remove a process
   boundary from the capture path.
-- **macOS**: Camera capture requires ffmpeg from Homebrew; the app does not
-  bundle a macOS ffmpeg binary. Camera access must be granted in System
-  Settings > Privacy & Security > Camera.
 
 ## Licence
 

@@ -66,81 +66,44 @@ impl std::fmt::Display for CameraFormat {
 
 /// Enumerate video capture devices.
 pub fn list_devices() -> Result<Vec<CameraDevice>> {
-    #[cfg(windows)]
-    {
-        // ffmpeg prints the device list to stderr and then exits non-zero because
-        // the dummy input cannot be opened. That is the documented way to do this.
-        let out = super::quiet_command("ffmpeg")
-            .args(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
-            .output()
-            .map_err(|e| {
-                DetectError::Camera(format!("could not run ffmpeg ({e}); it must be on PATH"))
-            })?;
-
-        let devices = parse_dshow_devices(&String::from_utf8_lossy(&out.stderr));
-        if devices.is_empty() {
-            return Err(DetectError::Camera(
-                "no video capture devices found. Check that the camera is not in use by another \
-                 app, and that Windows camera privacy settings allow desktop apps"
-                    .into(),
-            ));
-        }
-        return Ok(devices);
-    }
-
-    #[cfg(target_os = "macos")]
-    {
-        let out = super::quiet_command("ffmpeg")
-            .args(["-hide_banner", "-f", "avfoundation", "-list_devices", "true", "-i", ""])
-            .output()
-            .map_err(|e| {
-                DetectError::Camera(format!("could not run ffmpeg ({e}); it must be on PATH"))
-            })?;
-
-        let devices = parse_avf_devices(&String::from_utf8_lossy(&out.stderr));
-        if devices.is_empty() {
-            return Err(DetectError::Camera(
-                "no video capture devices found. Check that the camera is not in use by another \
-                 app, and that macOS camera privacy settings allow this app"
-                    .into(),
-            ));
-        }
-        return Ok(devices);
-    }
-
-    #[cfg(not(any(windows, target_os = "macos")))]
-    {
-        Err(DetectError::Camera(
-            "device enumeration is implemented for Windows/DirectShow and macOS/AVFoundation only; \
+    if !cfg!(windows) {
+        return Err(DetectError::Camera(
+            "device enumeration is implemented for Windows/DirectShow only; \
              use file:<clip> or dir:<frames> elsewhere"
                 .into(),
-        ))
+        ));
     }
+
+    // ffmpeg prints the device list to stderr and then exits non-zero because
+    // the dummy input cannot be opened. That is the documented way to do this.
+    let out = super::quiet_command("ffmpeg")
+        .args(["-hide_banner", "-list_devices", "true", "-f", "dshow", "-i", "dummy"])
+        .output()
+        .map_err(|e| {
+            DetectError::Camera(format!("could not run ffmpeg ({e}); it must be on PATH"))
+        })?;
+
+    let devices = parse_dshow_devices(&String::from_utf8_lossy(&out.stderr));
+    if devices.is_empty() {
+        return Err(DetectError::Camera(
+            "no video capture devices found. Check that the camera is not in use by another \
+             app, and that Windows camera privacy settings allow desktop apps"
+                .into(),
+        ));
+    }
+    Ok(devices)
 }
 
 /// Modes a device claims to support. Worth reading before trusting a config:
 /// asking for a combination the camera does not offer makes ffmpeg exit
 /// immediately rather than negotiate.
 pub fn list_formats(device: &CameraDevice) -> Result<Vec<CameraFormat>> {
-    #[cfg(windows)]
-    {
-        let out = super::quiet_command("ffmpeg")
-            .args(["-hide_banner", "-f", "dshow", "-list_options", "true", "-i"])
-            .arg(format!("video={}", device.selector()))
-            .output()
-            .map_err(|e| DetectError::Camera(format!("could not run ffmpeg ({e})")))?;
-        Ok(parse_dshow_formats(&String::from_utf8_lossy(&out.stderr)))
-    }
-
-    #[cfg(not(windows))]
-    {
-        let _ = device;
-        Err(DetectError::Camera(
-            "format listing is not supported with AVFoundation on macOS; \
-             use default capture settings instead"
-                .into(),
-        ))
-    }
+    let out = super::quiet_command("ffmpeg")
+        .args(["-hide_banner", "-f", "dshow", "-list_options", "true", "-i"])
+        .arg(format!("video={}", device.selector()))
+        .output()
+        .map_err(|e| DetectError::Camera(format!("could not run ffmpeg ({e})")))?;
+    Ok(parse_dshow_formats(&String::from_utf8_lossy(&out.stderr)))
 }
 
 /// Parse the device list out of ffmpeg's stderr.
@@ -248,53 +211,6 @@ fn unquote(s: &str) -> Option<&str> {
     s.strip_prefix('"')?.strip_suffix('"')
 }
 
-/// Parse the AVFoundation device list.
-///
-/// Expected output from `ffmpeg -f avfoundation -list_devices true -i ""`:
-/// ```text
-/// [AVFoundation indev @ 0x...] AVFoundation video devices:
-/// [AVFoundation indev @ 0x...] [0] FaceTime HD Camera
-/// [AVFoundation indev @ 0x...] [1] Capture screen 0
-/// [AVFoundation indev @ 0x...] AVFoundation audio devices:
-/// [AVFoundation indev @ 0x...] [0] External Microphone
-/// ```
-/// Audio devices are dropped; only video devices are kept.
-fn parse_avf_devices(text: &str) -> Vec<CameraDevice> {
-    let mut devices: Vec<CameraDevice> = Vec::new();
-    let mut in_video = false;
-    let mut _in_audio = false;
-
-    for line in text.lines() {
-        let line = strip_ffmpeg_prefix(line);
-
-        if line.contains("AVFoundation video devices:") {
-            in_video = true;
-            _in_audio = false;
-            continue;
-        }
-        if line.contains("AVFoundation audio devices:") {
-            in_video = false;
-            _in_audio = true;
-            continue;
-        }
-
-        if in_video {
-            // Lines look like: [0] FaceTime HD Camera
-            if let Some(rest) = line.strip_prefix('[') {
-                if let Some(end) = rest.find(']') {
-                    let idx: usize = rest[..end].trim().parse().unwrap_or(usize::MAX);
-                    let name = rest[end + 1..].trim();
-                    if idx != usize::MAX && !name.is_empty() {
-                        devices.push(CameraDevice { index: devices.len(), name: name.to_string(), alt_name: None });
-                    }
-                }
-            }
-        }
-    }
-
-    devices
-}
-
 // ---------------------------------------------------------------------------
 // the source
 // ---------------------------------------------------------------------------
@@ -330,40 +246,16 @@ impl CameraSource {
             )?;
 
         let mut cmd = super::quiet_command("ffmpeg");
-        cmd.args(["-v", "error", "-nostdin"]);
-
-        #[cfg(windows)]
-        {
-            cmd.arg("-f").arg("dshow");
+        cmd.args(["-v", "error", "-nostdin", "-f", "dshow"])
             // dshow drops frames and warns loudly without a real-time buffer.
-            cmd.args(["-rtbufsize", "128M"]);
-            if cfg.prefer_mjpeg {
-                cmd.args(["-vcodec", "mjpeg"]);
-            }
-            cmd.args(["-video_size", &format!("{}x{}", cfg.width, cfg.height)])
-                .args(["-framerate", &cfg.fps.to_string()])
-                .arg("-i")
-                .arg(format!("video={}", device.selector()));
+            .args(["-rtbufsize", "128M"]);
+        if cfg.prefer_mjpeg {
+            cmd.args(["-vcodec", "mjpeg"]);
         }
-
-        #[cfg(target_os = "macos")]
-        {
-            cmd.arg("-f").arg("avfoundation");
-            cmd.args(["-video_size", &format!("{}x{}", cfg.width, cfg.height)])
-                .args(["-framerate", &cfg.fps.to_string()])
-                .arg("-i")
-                .arg(format!("{}:", device.index));
-        }
-
-        #[cfg(not(any(windows, target_os = "macos")))]
-        {
-            let _ = device;
-            return Err(DetectError::Camera(
-                "camera capture is supported on Windows (DirectShow) and macOS (AVFoundation) only; \
-                 use file:<clip> or dir:<frames> for other platforms"
-                    .into(),
-            ));
-        }
+        cmd.args(["-video_size", &format!("{}x{}", cfg.width, cfg.height)])
+            .args(["-framerate", &cfg.fps.to_string()])
+            .arg("-i")
+            .arg(format!("video={}", device.selector()));
 
         let label = format!("camera:{} ({})", device.index, device.name);
         let mut pipe = RawRgbPipe::spawn(label, cfg.width, cfg.height, cmd, true)?;
@@ -372,30 +264,19 @@ impl CameraSource {
         // start, or a mode it does not support, should fail at open with
         // ffmpeg's own explanation — not thirty seconds into a session.
         let primed = pipe.next_frame().map_err(|e| {
-            let help = if cfg!(windows) {
-                format!(
-                    "{e}\n\n\
-                     Three things cause this, in order of likelihood:\n\
-                     1. Another app is holding the camera — OBS, Teams, Zoom, Discord, or a browser \
-                         tab. Windows lets exactly one process own a webcam. Close it and retry.\n\
-                     2. The requested mode is not offered. You asked for {}{}x{} @ {} fps; \
-                         run `detect-cli devices --formats` and pick a listed combination.\n\
-                     3. Camera access is off for desktop apps in Windows privacy settings.",
-                    if cfg.prefer_mjpeg { "mjpeg " } else { "raw " },
-                    cfg.width,
-                    cfg.height,
-                    cfg.fps
-                )
-            } else {
-                format!(
-                    "{e}\n\n\
-                     Two things cause this, in order of likelihood:\n\
-                     1. Another app is holding the camera — Photo Booth, FaceTime, Zoom, OBS, \
-                         or a browser tab. macOS lets exactly one process own a camera. Close it and retry.\n\
-                     2. Camera access is off for this app in System Settings > Privacy & Security > Camera.",
-                )
-            };
-            DetectError::Camera(help)
+            DetectError::Camera(format!(
+                "{e}\n\n\
+                 Three things cause this, in order of likelihood:\n\
+                 1. Another app is holding the camera — OBS, Teams, Zoom, Discord, or a browser \
+                    tab. Windows lets exactly one process own a webcam. Close it and retry.\n\
+                 2. The requested mode is not offered. You asked for {}{}x{} @ {} fps; \
+                    run `detect-cli devices --formats` and pick a listed combination.\n\
+                 3. Camera access is off for desktop apps in Windows privacy settings.",
+                if cfg.prefer_mjpeg { "mjpeg " } else { "raw " },
+                cfg.width,
+                cfg.height,
+                cfg.fps
+            ))
         })?;
 
         Ok(Self {
@@ -512,29 +393,5 @@ Error opening input file dummy.
 
         let without = CameraDevice { index: 0, name: "Integrated Webcam".into(), alt_name: None };
         assert_eq!(without.selector(), "Integrated Webcam");
-    }
-
-    #[test]
-    fn parses_avfoundation_devices() {
-        let output = "\
-[AVFoundation indev @ 0x7fc3e3c08140] AVFoundation video devices:
-[AVFoundation indev @ 0x7fc3e3c08140] [0] FaceTime HD Camera
-[AVFoundation indev @ 0x7fc3e3c08140] [1] Capture screen 0
-[AVFoundation indev @ 0x7fc3e3c08140] AVFoundation audio devices:
-[AVFoundation indev @ 0x7fc3e3c08140] [0] External Microphone
-[AVFoundation indev @ 0x7fc3e3c08140] [1] MacBook Air Microphone
-";
-        let devices = parse_avf_devices(output);
-        assert_eq!(devices.len(), 2, "audio devices must not be included");
-        assert_eq!(devices[0].name, "FaceTime HD Camera");
-        assert_eq!(devices[0].index, 0);
-        assert_eq!(devices[1].name, "Capture screen 0");
-        assert_eq!(devices[1].index, 1);
-    }
-
-    #[test]
-    fn empty_avf_output_yields_no_devices() {
-        assert!(parse_avf_devices("").is_empty());
-        assert!(parse_avf_devices("only audio devices here\n[0] Microphone").is_empty());
     }
 }
