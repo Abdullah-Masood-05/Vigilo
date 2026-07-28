@@ -247,6 +247,10 @@ Stated plainly, because the HUD makes it look further along than it is:
   capture crate would drop ~128 MB from the installer and remove a process
   boundary from the capture path.
 
+## Platform support
+
+macOS support is tracked in the [`macos-support`](https://github.com/Abdullah-Masood-05/deepscreen-viewer/tree/macos-support) branch. Pre-built macOS builds are available on [EbadJunaid's fork releases](https://github.com/EbadJunaid/deepscreen-viewer/releases).
+
 ## Licence
 
 MIT. Model weights carry their own licences — see the table above.
