@@ -9,6 +9,9 @@
 /.claude/
 CLAUDE.md
 
+# macOS metadata
+.DS_Store
+
 # Screenshots may contain a real person.
 *.png
 !src-tauri/icons/*.png
