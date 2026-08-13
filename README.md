@@ -4,7 +4,7 @@
 [![Rust](https://img.shields.io/badge/Rust-1.97-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![ONNX Runtime](https://img.shields.io/badge/ONNX%20Runtime-1.24-005CED?logo=onnx&logoColor=white)](https://onnxruntime.ai/)
 [![Frontend](https://img.shields.io/badge/frontend-vanilla%20JS-F7DF1E?logo=javascript&logoColor=black)](dist/)
-[![Licence](https://img.shields.io/badge/licence-MIT-blue)](LICENSE)
+[![Licence](https://img.shields.io/badge/licence-AGPL--3.0-blue)](LICENSE)
 
 Webcam proctoring for online exams. Opens, turns the camera on, and watches for
 the things that matter: nobody in frame, two people in frame, a phone in shot,
@@ -22,7 +22,7 @@ git clone https://github.com/Abdullah-Masood-05/deepscreen-viewer
 cd deepscreen-viewer
 
 bun install          # installs the Tauri CLI (see "About bun" below)
-# then fetch the models and ffmpeg — see the two sections below
+# then fetch the models and ffmpeg, see the two sections below
 
 bun run dev          # run it
 bun run build        # build installers
@@ -39,7 +39,7 @@ cargo tauri build            # needs: cargo install tauri-cli --version "^2"
 ### About bun
 
 `package.json` exists **only** to install the Tauri CLI. The front end has no
-dependencies, no bundler and no build step — it is one HTML file, one CSS file
+dependencies, no bundler and no build step. It is one HTML file, one CSS file
 and one JS file, served as-is. `bun install` will not pull in a framework
 because there is nothing to pull in.
 
@@ -82,12 +82,11 @@ only `file:`/`dir:` replay does, and that is dev-only. `--extra-ldflags=-static`
 removes the mingw runtime DLLs (`libwinpthread-1.dll` and friends) a default
 build would otherwise depend on.
 
-**LGPL, not GPL.** This project is MIT and may need to ship commercially; a
-GPL ffmpeg build would impose GPL obligations on anything distributing it. The
-default configure is LGPL 2.1+ with none of the GPL/nonfree flags — the
-licence text ships alongside the binary. Full detail, including the exact
-configure line and the equivalence measurements against a full LGPL build, is
-in `rust_context.md` §22.
+**LGPL, not GPL.** The default configure is LGPL 2.1+ with none of the GPL/nonfree
+flags. LGPL is compatible with this project's AGPL-3.0 licence; a GPL build would
+not be. The licence text ships alongside the binary. Full detail, including the
+exact configure line and the equivalence measurements against a full LGPL build,
+is in `rust_context.md` §22.
 
 Rebuilding it needs MSYS2 with mingw-w64, nasm and pkg-config — a one-time
 cost on whoever's machine builds it, not a permanent project dependency, since
@@ -131,9 +130,9 @@ You should end up with exactly these five files:
 | `yolox_nano.onnx` | prohibited objects | 3.5 MB | [Apache 2.0](https://github.com/Megvii-BaseDetection/YOLOX) |
 | `w600k_mbf.onnx` | identity | 13.0 MB | [InsightFace](https://github.com/deepinsight/insightface) |
 
-Ultralytics' YOLO26n is deliberately **not** used. It is AGPL-3.0, which would
-require open-sourcing anything shipping it — and it measured 2.7× slower than
-YOLOX-Nano on this hardware, so the permissive option was also the quicker one.
+Ultralytics' YOLO26n is deliberately **not** used. It measured 2.7x slower than
+YOLOX-Nano on this hardware, and YOLOX-Nano's Apache 2.0 licence is simpler to
+deal with for downstream users.
 
 ## What it detects
 
@@ -253,4 +252,4 @@ macOS support is tracked in the [`macos-support`](https://github.com/Abdullah-Ma
 
 ## Licence
 
-MIT. Model weights carry their own licences — see the table above.
+AGPL-3.0. Model weights carry their own licences, see the table above.
