@@ -54,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [windows-latest, macos-latest]
+        platform: [windows-latest, macos-latest, arch-linux]
 
     steps:
       - name: Checkout repository
@@ -94,6 +94,17 @@ jobs:
 
       - name: Build Tauri
         run: bun run tauri build --debug
+
+      - name: Build Arch Linux package (.pkg.tar.zst)
+        if: runner.os == 'arch-linux'
+        run: |
+          # Install required dependencies for building
+          echo "vigilo" | sudo -S pacman -Syu --noconfirm --needed base-devel webkit2gtk gtk3
+          # Create build user
+          useradd -m -U builder 2>/dev/null || true
+          chown -R builder:builder /tmp/archpkg 2>/dev/null || true
+          # Build package
+          su builder -c "makepkg -sf --noconfirm --skipchecksums"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
