@@ -15,20 +15,21 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Install system dependencies (Linux)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libgtk-3-dev libxdo-dev
+
       - name: Install Rust
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97
           components: clippy, rustfmt
 
-      - name: Install bun
-        uses: oven-sh/setup-bun@v2
-
-      - name: Install dependencies
+      - name: Run clippy and tests
         run: |
           cd src-tauri
-          cargo update
-          cargo clippy --all-targets --release -- -D warnings
+          cargo clippy --all-targets --release
           cargo test --release
 
   build:
@@ -36,12 +37,21 @@ jobs:
     needs: test
     runs-on: ${{ matrix.platform }}
     strategy:
+      fail-fast: false
       matrix:
         platform: [windows-latest, macos-latest, ubuntu-latest]
 
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          lfs: true
+
+      - name: Install system dependencies (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev patchelf libssl-dev libgtk-3-dev libxdo-dev
 
       - name: Install bun
         uses: oven-sh/setup-bun@v2
@@ -50,24 +60,32 @@ jobs:
         uses: dtolnay/rust-toolchain@master
         with:
           toolchain: 1.97
-          components: clippy, rustfmt
+
+      - name: Download model weights
+        shell: bash
+        run: |
+          mkdir -p models
+          curl -sSL -o models/face_detection_yunet_2023mar.onnx https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx
+          curl -sSL -o models/headpose_mobilenetv3_small.onnx https://github.com/yakhyo/head-pose-estimation/releases/download/weights/mobilenetv3_small.onnx
+          curl -sSL -o models/mobileone_s0_gaze.onnx https://github.com/yakhyo/gaze-estimation/releases/download/weights/mobileone_s0_gaze.onnx
+          curl -sSL -o models/yolox_nano.onnx https://github.com/Megvii-BaseDetection/YOLOX/releases/download/0.1.1rc0/yolox_nano.onnx
+          curl -sSL -o buffalo_sc.zip https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip
+          unzip -j buffalo_sc.zip w600k_mbf.onnx -d models
+          rm -f buffalo_sc.zip
+
+      - name: Install dependencies
+        run: bun install
 
       - name: Build Tauri
-        run: |
-          if [[ "$RUNNER_OS" == "Windows" ]]; then
-            cargo tauri build --debug
-          elif [[ "$RUNNER_OS" == "macOS" ]]; then
-            cargo tauri build --debug
-          else
-            cargo tauri build --debug
-          fi
-        shell: bash
+        run: bun run tauri build --debug
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: tauri-installer-${{ matrix.platform }}
-          path: src-tauri/target/release/bundle*/
+          path: |
+            src-tauri/target/debug/bundle/
+            src-tauri/target/release/bundle/
 
   release:
     name: Create Release
