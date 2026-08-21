@@ -1,4 +1,4 @@
-# deepscreen-viewer
+# Vigilo
 
 [![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
 [![Rust](https://img.shields.io/badge/Rust-1.97-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
@@ -18,8 +18,8 @@ produce an alert.
 ## Quick start
 
 ```bash
-git clone https://github.com/Abdullah-Masood-05/deepscreen-viewer
-cd deepscreen-viewer
+git clone https://github.com/Abdullah-Masood-05/Vigilo
+cd Vigilo
 
 bun install          # installs the Tauri CLI (see "About bun" below)
 # then fetch the models and ffmpeg, see the two sections below
@@ -253,7 +253,7 @@ Stated plainly, because the HUD makes it look further along than it is:
   - **Fedora**: `.rpm` packages via `dnf`
   - **Arch Linux**: `.tar.zst` packages via `pacman`
   All are built through the GitHub Actions CI workflow (see below).
-- **macOS** — pre-built macOS apps are available on [EbadJunaid's fork releases](https://github.com/EbadJunaid/deepscreen-viewer/releases). Support is tracked in the [`macos-support`](https://github.com/Abdullah-Masood-05/deepscreen-viewer/tree/macos-support) branch.
+- **macOS** — pre-built macOS apps are available on [EbadJunaid's fork releases](https://github.com/EbadJunaid/deepscreen-viewer/releases). Support is tracked in the [`macos-support`](https://github.com/Abdullah-Masood-05/Vigilo/tree/macos-support) branch.
 
 ## CI / CD
 
