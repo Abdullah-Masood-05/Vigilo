@@ -261,8 +261,8 @@ This project uses GitHub Actions for CI. The workflow:
 
 - Runs on every push to `main` and on pull requests
 - Checks that `cargo clippy --all-targets` and `cargo test --release` pass
-- Builds Tauri installers for **Windows and macOS**
-- Publishes Linux `.deb` and `.rpm` packages to the GitHub Release assets (Debian/Ubuntu and Fedora)
+- Builds Tauri installers for **Windows, macOS, and Arch Linux**
+- Publishes Linux `.deb`, `.rpm`, and `.tar.zst` packages to the GitHub Release assets
 - Uploads macOS `.dmg` builds
 
 ## Licence
