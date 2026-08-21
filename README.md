@@ -252,8 +252,8 @@ Stated plainly, because the HUD makes it look further along than it is:
   - **Debian/Ubuntu**: `.deb` packages via `apt`/`dpkg`
   - **Fedora**: `.rpm` packages via `dnf`
   - **Arch Linux**: `.tar.zst` packages via `pacman`
-  All are built through the GitHub Actions CI workflow (see below).
-- **macOS** — pre-built macOS apps are available on [EbadJunaid's fork releases](https://github.com/EbadJunaid/deepscreen-viewer/releases). Support is tracked in the [`macos-support`](https://github.com/Abdullah-Masood-05/Vigilo/tree/macos-support) branch.
+  Linux installers for Debian/Ubuntu and Fedora are built through the GitHub Actions CI workflow. Arch Linux packages are documented in the repository but built separately.
+- **macOS** — pre-built macOS apps are available on [EbadJunaid's fork releases](https://github.com/EbadJunaid/deepscreen-viewer/releases). Support is tracked in the [`macos-support`](https://github.com/Abdullah-Masood-05/deepscreen-viewer/tree/macos-support) branch.
 
 ## CI / CD
 
@@ -261,11 +261,9 @@ This project uses GitHub Actions for CI. The workflow:
 
 - Runs on every push to `main` and on pull requests
 - Checks that `cargo clippy --all-targets` and `cargo test --release` pass
-- Builds Tauri installers for Windows, Linux, and macOS
-- Publishes Linux `.deb`, `.rpm`, and `.tar.zst` packages to the GitHub Release assets
+- Builds Tauri installers for **Windows and macOS**
+- Publishes Linux `.deb` and `.rpm` packages to the GitHub Release assets (Debian/Ubuntu and Fedora)
 - Uploads macOS `.dmg` builds
-
-The full `.github/workflows/ci.yml` configuration is available in the repository.
 
 ## Licence
 
