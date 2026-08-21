@@ -54,7 +54,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [windows-latest, macos-latest, ubuntu-latest]
+        platform: [windows-latest, macos-latest]
 
     steps:
       - name: Checkout repository
@@ -94,45 +94,6 @@ jobs:
 
       - name: Build Tauri
         run: bun run tauri build --debug
-
-      - name: Build Arch Linux package (.pkg.tar.zst)
-        if: runner.os == 'Linux'
-        run: |
-          # Prepare source directory for makepkg
-          mkdir -p /tmp/archpkg/src
-          cp src-tauri/target/debug/deepscreen-viewer /tmp/archpkg/src/
-          cp -r models /tmp/archpkg/src/
-          cp -r ffmpeg /tmp/archpkg/src/ 2>/dev/null || true
-          cp src-tauri/icons/icon.png /tmp/archpkg/src/icon.png
-          cp pkg/arch/PKGBUILD /tmp/archpkg/
-
-          # Create .desktop entry
-          cat > /tmp/archpkg/src/vigilo.desktop << 'EOF'
-          [Desktop Entry]
-          Name=Vigilo
-          Comment=Webcam proctoring for online exams
-          Exec=deepscreen-viewer
-          Icon=vigilo
-          Terminal=false
-          Type=Application
-          Categories=Utility;Education;
-          EOF
-
-          # Build using Arch Linux Docker container
-          docker run --rm \
-            -v /tmp/archpkg:/pkg \
-            -w /pkg \
-            archlinux:latest \
-            bash -c '
-              pacman -Syu --noconfirm base-devel
-              useradd -m builder
-              chown -R builder:builder /pkg
-              su builder -c "makepkg -sf --noconfirm --skipchecksums"
-            '
-
-          # Copy the built package to the bundle directory
-          mkdir -p src-tauri/target/debug/bundle/pacman
-          cp /tmp/archpkg/*.pkg.tar.zst src-tauri/target/debug/bundle/pacman/
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
