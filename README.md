@@ -1,4 +1,4 @@
-# deepscreen-viewer
+# Vigilo
 
 [![Tauri](https://img.shields.io/badge/Tauri-2.x-24C8DB?logo=tauri&logoColor=white)](https://tauri.app/)
 [![Rust](https://img.shields.io/badge/Rust-1.97-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
@@ -18,8 +18,8 @@ produce an alert.
 ## Quick start
 
 ```bash
-git clone https://github.com/Abdullah-Masood-05/deepscreen-viewer
-cd deepscreen-viewer
+git clone https://github.com/Abdullah-Masood-05/Vigilo
+cd Vigilo
 
 npm install          # installs the Tauri CLI (bun works too — see "About bun")
 # then fetch the models, and on macOS install ffmpeg — see sections below
@@ -36,7 +36,7 @@ cargo run --release
 cargo tauri build            # needs: cargo install tauri-cli --version "^2"
 ```
 
-macOS support is tracked in the [`macos-support`](https://github.com/Abdullah-Masood-05/deepscreen-viewer/tree/macos-support) branch. Pre-built macOS builds are available on [EbadJunaid's fork releases](https://github.com/EbadJunaid/deepscreen-viewer/releases).
+macOS support is tracked in the [`macos-support`](https://github.com/Abdullah-Masood-05/Vigilo/tree/macos-support) branch. Pre-built macOS builds are available on [EbadJunaid's fork releases](https://github.com/EbadJunaid/deepscreen-viewer/releases).
 
 ### macOS
 
@@ -260,7 +260,7 @@ methodology and the per-slot coverage breakdown are in `rust_context.md` §18.
   - **Fedora**: `.rpm` packages via `dnf`
   - **Arch Linux**: `.tar.zst` packages via `pacman`
   All are built through the GitHub Actions CI workflow (see below).
-- **macOS** — pre-built macOS apps are available on [EbadJunaid's fork releases](https://github.com/EbadJunaid/deepscreen-viewer/releases). Support is tracked in the [`macos-support`](https://github.com/Abdullah-Masood-05/deepscreen-viewer/tree/macos-support) branch.
+- **macOS** — pre-built macOS apps are available on [EbadJunaid's fork releases](https://github.com/EbadJunaid/deepscreen-viewer/releases). Support is tracked in the [`macos-support`](https://github.com/Abdullah-Masood-05/Vigilo/tree/macos-support) branch.
 
 ## CI / CD
 
