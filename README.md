@@ -4,7 +4,7 @@
 [![Rust](https://img.shields.io/badge/Rust-1.97-000000?logo=rust&logoColor=white)](https://www.rust-lang.org/)
 [![ONNX Runtime](https://img.shields.io/badge/ONNX%20Runtime-1.24-005CED?logo=onnx&logoColor=white)](https://onnxruntime.ai/)
 [![Frontend](https://img.shields.io/badge/frontend-vanilla%20JS-F7DF1E?logo=javascript&logoColor=black)](dist/)
-[![Licence](https://img.shields.io/badge/licence-MIT-blue)](LICENSE)
+[![Licence](https://img.shields.io/badge/licence-AGPL--3.0-blue)](LICENSE)
 
 Webcam proctoring for online exams. Opens, turns the camera on, and watches for
 the things that matter: nobody in frame, two people in frame, a phone in shot,
@@ -255,14 +255,24 @@ methodology and the per-slot coverage breakdown are in `rust_context.md` §18.
 
 ## Platform support
 
-| Feature | Windows | macOS |
-|---|---|---|
-| Camera capture | DirectShow (bundled ffmpeg) | AVFoundation (Homebrew ffmpeg) |
-| Device enumeration | ✅ `detect-cli devices` | ✅ via AVFoundation |
-| Format listing | ✅ `detect-cli devices --formats` | ❌ (AVFoundation does not expose format listing) |
-| File/dir replay | ✅ | ✅ |
-| Model inference | ✅ (CPU / ONNX Runtime) | ✅ (CPU / ONNX Runtime, Apple Silicon) |
-| Build target | `.msi` / `.exe` | `.dmg` / `.app` |
+- **Linux** — pre-built installers are available for the three main distributions:
+  - **Debian/Ubuntu**: `.deb` packages via `apt`/`dpkg`
+  - **Fedora**: `.rpm` packages via `dnf`
+  - **Arch Linux**: `.tar.zst` packages via `pacman`
+  All are built through the GitHub Actions CI workflow (see below).
+- **macOS** — pre-built macOS apps are available on [EbadJunaid's fork releases](https://github.com/EbadJunaid/deepscreen-viewer/releases). Support is tracked in the [`macos-support`](https://github.com/Abdullah-Masood-05/deepscreen-viewer/tree/macos-support) branch.
+
+## CI / CD
+
+This project uses GitHub Actions for CI. The workflow:
+
+- Runs on every push to `main` and on pull requests
+- Checks that `cargo clippy --all-targets` and `cargo test --release` pass
+- Builds Tauri installers for Windows, Linux, and macOS
+- Publishes Linux `.deb`, `.rpm`, and `.tar.zst` packages to the GitHub Release assets
+- Uploads macOS `.dmg` builds
+
+The full `.github/workflows/ci.yml` configuration is available in the repository.
 
 ## Known limitations
 
