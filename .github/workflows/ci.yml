@@ -1,0 +1,98 @@
+name: CI / CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    name: Test & Lint
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.97
+          profile: minimal
+          components: clippy, rustfmt
+
+      - name: Install bun
+        uses: oven-sh/bun-install@v1
+
+      - name: Install dependencies
+        run: |
+          cd src-tauri
+          cargo update
+          cargo clippy --all-targets --release -- -D warnings
+          cargo test --release
+
+  build:
+    name: Build Installers
+    needs: test
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        platform: [windows-latest, macos-latest, ubuntu-latest]
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install bun
+        uses: oven-sh/bun-install@v1
+
+      - name: Install Rust
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: 1.97
+          profile: minimal
+          components: clippy, rustfmt
+
+      - name: Build Tauri
+        run: |
+          if [[ "$RUNNER_OS" == "Windows" ]]; then
+            cargo tauri build --debug
+          elif [[ "$RUNNER_OS" == "macOS" ]]; then
+            cargo tauri build --debug
+          else
+            cargo tauri build --debug
+          fi
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: tauri-installer-${{ matrix.platform }}
+          path: src-tauri/target/release/bundle*/
+
+  release:
+    name: Create Release
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.ref == 'refs/heads/main'
+    permissions:
+      contents: write
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: ./artifacts
+          pattern: tauri-installer-*
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v1
+        with:
+          tag_name: v${{ github.run_number }}
+          name: "Release ${{ github.run_number }}"
+          files: |
+            artifacts/**/*
+          generate_release_notes: true
