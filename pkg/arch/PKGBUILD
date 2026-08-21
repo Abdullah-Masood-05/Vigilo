@@ -1,0 +1,35 @@
+# Maintainer: Abdullah Masood <abdullah.masood.05@example.com>
+pkgname=vigilo
+pkgver=0.1.0
+pkgrel=1
+pkgdesc="Webcam proctoring for online exams — camera frames in, proctoring signals out"
+arch=('x86_64')
+url="https://github.com/Abdullah-Masood-05/Vigilo"
+license=('AGPL-3.0-only')
+depends=('webkit2gtk-4.1' 'openssl' 'gtk3')
+provides=('deepscreen-viewer')
+
+# This PKGBUILD is used in CI to package the pre-built binary.
+# The binary, models, and resources are placed by the CI workflow
+# before makepkg runs.
+
+package() {
+    install -Dm755 "$srcdir/deepscreen-viewer" "$pkgdir/usr/bin/deepscreen-viewer"
+
+    # Bundle models
+    install -d "$pkgdir/usr/share/vigilo/models"
+    for model in "$srcdir"/models/*.onnx; do
+        [ -f "$model" ] && install -Dm644 "$model" "$pkgdir/usr/share/vigilo/models/$(basename "$model")"
+    done
+
+    # Bundle ffmpeg if present
+    if [ -f "$srcdir/ffmpeg/ffmpeg" ]; then
+        install -Dm755 "$srcdir/ffmpeg/ffmpeg" "$pkgdir/usr/share/vigilo/ffmpeg/ffmpeg"
+    fi
+
+    # Desktop entry
+    install -Dm644 "$srcdir/vigilo.desktop" "$pkgdir/usr/share/applications/vigilo.desktop"
+
+    # Icon
+    install -Dm644 "$srcdir/icon.png" "$pkgdir/usr/share/icons/hicolor/32x32/apps/vigilo.png"
+}
