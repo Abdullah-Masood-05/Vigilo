@@ -1,10 +1,10 @@
-name: CI / CD
+name: CI / CD (GPU DirectML)
 
 on:
   push:
-    branches: [main]
+    branches: [gpu-directml]
   pull_request:
-    branches: [main]
+    branches: [gpu-directml]
   workflow_dispatch:
 
 jobs:
@@ -150,10 +150,10 @@ jobs:
           if-no-files-found: error
 
   release:
-    name: Create Release
+    name: Update GPU Release
     needs: build
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
+    if: github.ref == 'refs/heads/gpu-directml'
     permissions:
       contents: write
 
@@ -168,27 +168,27 @@ jobs:
           pattern: installers-*
           merge-multiple: true
 
-      - name: Publish GitHub Release
+      - name: Publish GPU Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ github.run_number }}
-          name: "Vigilo v${{ github.run_number }}"
+          tag_name: v0.1.0-gpu
+          name: "Vigilo v0.1.0 (GPU DirectML build)"
+          prerelease: true
           files: |
             downloaded-installers/*
           generate_release_notes: false
           body: |
-            Vigilo exam proctoring desktop application.
+            GPU-accelerated pre-release build of Vigilo using DirectML for ONNX Runtime model inference.
 
-            ### Downloads
+            ### Overview
+            This build moves inference workloads to any DirectX 12 compatible GPU via DirectML, reducing face/pose/gaze pipeline latency from ~27 ms down to ~5.8 ms p50.
 
-            - **Windows (x86_64)**: `.exe` (NSIS setup) and `.msi` (Wix installer)
-            - **macOS (Apple Silicon / aarch64)**: `.dmg`
-            - **Linux (Debian / Ubuntu)**: `.deb` package
-            - **Linux (Fedora / RHEL)**: `.rpm` package
-            - **Linux (Arch Linux)**: `.pkg.tar.zst` package
-            - **Linux (Generic)**: `.AppImage`
+            ### Installers and DirectML bundling
+            - **Windows MSI installer (`.msi`)**: Recommended. Bundles `DirectML.dll` automatically.
+            - **Windows NSIS installer (`.exe`)**: Functional, but falls back to CPU execution if DirectML is not already present in the Windows system environment.
+            - **macOS / Linux**: Provided with CPU fallback execution.
 
-            ### Getting started
-            1. Install and run Vigilo.
-            2. Allow camera permissions when prompted.
-            3. Position yourself in front of the camera and click "Enrol face" before starting the session.
+            ### Setup
+            1. Download and run the installer (MSI recommended on Windows).
+            2. If Windows SmartScreen appears, click "More info" followed by "Run anyway".
+            3. Position yourself facing the webcam and click "Enrol face" before starting the session.
