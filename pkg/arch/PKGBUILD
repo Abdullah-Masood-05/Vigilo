@@ -22,10 +22,15 @@ package() {
     for model in "$srcdir"/models/*.onnx; do
         [ -f "$model" ] && install -Dm644 "$model" "$pkgdir/usr/share/vigilo/models/$(basename "$model")"
     done
+    install -d "$pkgdir/usr/lib/Vigilo" "$pkgdir/usr/lib/vigilo"
+    ln -sf /usr/share/vigilo/models "$pkgdir/usr/lib/Vigilo/models"
+    ln -sf /usr/share/vigilo/models "$pkgdir/usr/lib/vigilo/models"
 
     # Bundle ffmpeg if present
     if [ -f "$srcdir/ffmpeg/ffmpeg" ]; then
         install -Dm755 "$srcdir/ffmpeg/ffmpeg" "$pkgdir/usr/share/vigilo/ffmpeg/ffmpeg"
+        ln -sf /usr/share/vigilo/ffmpeg "$pkgdir/usr/lib/Vigilo/ffmpeg"
+        ln -sf /usr/share/vigilo/ffmpeg "$pkgdir/usr/lib/vigilo/ffmpeg"
     fi
 
     # Desktop entry

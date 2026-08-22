@@ -258,6 +258,14 @@ fn resolve_model_dir(handle: &tauri::AppHandle) -> Option<std::path::PathBuf> {
         // resource declared as `../models/*` lands under `_up_/models`.
         candidates.push(resource.join("_up_").join("models"));
     }
+    // Standard system install locations on Linux
+    candidates.push(std::path::PathBuf::from("/usr/share/vigilo/models"));
+    candidates.push(std::path::PathBuf::from("/usr/share/Vigilo/models"));
+    candidates.push(std::path::PathBuf::from("/usr/lib/vigilo/models"));
+    candidates.push(std::path::PathBuf::from("/usr/lib/Vigilo/models"));
+    candidates.push(std::path::PathBuf::from("/usr/local/share/vigilo/models"));
+    candidates.push(std::path::PathBuf::from("/usr/local/share/Vigilo/models"));
+
     candidates.push(std::path::PathBuf::from("models"));
     candidates.push(std::path::PathBuf::from("../models"));
     candidates.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../models"));
@@ -282,11 +290,18 @@ fn resolve_ffmpeg_dir(handle: &tauri::AppHandle) -> Option<std::path::PathBuf> {
         // resource declared as `../ffmpeg/*` lands under `_up_/ffmpeg`.
         candidates.push(resource.join("_up_").join("ffmpeg"));
     }
+    // Standard system install locations on Linux
+    candidates.push(std::path::PathBuf::from("/usr/share/vigilo/ffmpeg"));
+    candidates.push(std::path::PathBuf::from("/usr/share/Vigilo/ffmpeg"));
+    candidates.push(std::path::PathBuf::from("/usr/lib/vigilo/ffmpeg"));
+    candidates.push(std::path::PathBuf::from("/usr/lib/Vigilo/ffmpeg"));
+
     candidates.push(std::path::PathBuf::from("ffmpeg"));
     candidates.push(std::path::PathBuf::from("../ffmpeg"));
     candidates.push(std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../ffmpeg"));
 
-    candidates.into_iter().find(|p| p.join("ffmpeg.exe").exists())
+    let target = if cfg!(windows) { "ffmpeg.exe" } else { "ffmpeg" };
+    candidates.into_iter().find(|p| p.join(target).exists())
 }
 
 fn start_detector(
