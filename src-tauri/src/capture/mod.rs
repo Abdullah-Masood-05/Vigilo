@@ -64,6 +64,7 @@ fn bundled(program: &str) -> Option<std::path::PathBuf> {
 }
 
 pub(crate) fn quiet_command(program: &str) -> std::process::Command {
+    #[allow(unused_mut)]
     let mut cmd = match bundled(program) {
         Some(path) => std::process::Command::new(path),
         None => std::process::Command::new(program),
