@@ -55,7 +55,11 @@ pub fn set_ffmpeg_dir(dir: Option<std::path::PathBuf>) {
 /// was tested.
 fn bundled(program: &str) -> Option<std::path::PathBuf> {
     let dir = FFMPEG_DIR.get()?.as_ref()?;
-    let exe = dir.join(format!("{program}.exe"));
+    let exe = if cfg!(windows) {
+        dir.join(format!("{program}.exe"))
+    } else {
+        dir.join(program)
+    };
     exe.exists().then_some(exe)
 }
 
