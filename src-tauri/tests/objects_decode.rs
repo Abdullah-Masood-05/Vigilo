@@ -16,9 +16,9 @@
 
 use std::sync::Arc;
 
-use deepscreen_viewer::config::Config;
-use deepscreen_viewer::models::objects::YoloxNano;
-use deepscreen_viewer::types::Frame;
+use vigilo::config::Config;
+use vigilo::models::objects::YoloxNano;
+use vigilo::types::Frame;
 
 // Models live one level above the crate root (`deepscreen-viewer/models`),
 // matching the layout the app's own resource resolver and `tauri.conf.json`
@@ -42,7 +42,7 @@ fn load_image(path: &str) -> Option<Frame> {
 /// model actually saw rather than on what the proctoring allowlist permits.
 fn wide_open() -> Config {
     let mut cfg = Config::default();
-    cfg.thresholds.objects.allowlist = deepscreen_viewer::models::objects::COCO_CLASSES
+    cfg.thresholds.objects.allowlist = vigilo::models::objects::COCO_CLASSES
         .iter()
         .map(|s| s.to_string())
         .collect();

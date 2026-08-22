@@ -1,12 +1,12 @@
 [package]
-name = "deepscreen-viewer"
+name = "vigilo"
 version = "0.1.0"
 edition = "2021"
 license = "AGPL-3.0-only"
 description = "Exam proctoring desktop app: camera frames in, proctoring signals out, one project."
 # Two binaries live here now — the app and `detect-cli` — so "the binary" is
 # ambiguous and `cargo tauri build` refuses to guess which one to bundle.
-default-run = "deepscreen-viewer"
+default-run = "vigilo"
 
 # Formerly two repositories: a headless `deepscreen-detect` library and this
 # app, connected by a path dependency. Consolidated so a clone of this one
@@ -16,8 +16,12 @@ default-run = "deepscreen-viewer"
 # only in main.rs and its command handlers, never inside the lib modules.
 
 [lib]
-name = "deepscreen_viewer"
+name = "vigilo"
 path = "src/lib.rs"
+
+[[bin]]
+name = "vigilo"
+path = "src/main.rs"
 
 # `detect-cli` is a development harness, not part of the product, and it links
 # its own copy of ONNX Runtime — shipping it puts the inference engine in the

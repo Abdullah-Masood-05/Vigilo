@@ -186,7 +186,7 @@ fn encode(
 // http
 // ---------------------------------------------------------------------------
 
-const BOUNDARY: &str = "deepscreenframe";
+const BOUNDARY: &str = "vigiloframe";
 
 /// Bind loopback on an ephemeral port and serve the stream. Returns the port.
 pub fn serve(slot: PreviewSlot) -> io::Result<u16> {

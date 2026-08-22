@@ -10,11 +10,11 @@
 //! what make a proctoring system unusable, and you cannot measure a
 //! false-positive rate without footage of innocent behaviour.
 
-use deepscreen_viewer::types::{
+use vigilo::types::{
     BBox, EyeAspect, FaceDetection, Gaze, HeadPose, ObjectDetection, SignalCoverage, Signals,
     SlotState,
 };
-use deepscreen_viewer::Config;
+use vigilo::Config;
 
 /// A synthetic clip: someone looking progressively further left while a phone
 /// enters frame. Stands in for real footage until the corpus is recorded.
@@ -23,7 +23,7 @@ fn synthetic_look_away_with_phone(frames: u64, fps: f32) -> Vec<Signals> {
     // the recording carries the labels a real session would rather than a stub
     // that happens to serialize.
     let mut directions =
-        deepscreen_viewer::DirectionTracker::new(&Config::default().thresholds.debug_direction);
+        vigilo::DirectionTracker::new(&Config::default().thresholds.debug_direction);
 
     (0..frames)
         .map(|seq| {
@@ -155,7 +155,7 @@ fn a_steady_turn_changes_its_label_exactly_once() {
     // than a hand-picked pair of numbers: the head turns steadily from square
     // to well past the threshold, so the label must go CENTER -> LEFT and stay
     // there. Any flapping around the boundary shows up as extra transitions.
-    use deepscreen_viewer::Horizontal;
+    use vigilo::Horizontal;
 
     let signals = synthetic_look_away_with_phone(45, 15.0);
     let labels: Vec<Horizontal> = signals

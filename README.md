@@ -248,23 +248,25 @@ Stated plainly, because the HUD makes it look further along than it is:
 
 ## Platform support
 
-- **Linux** — pre-built installers are available for the three main distributions:
-  - **Debian/Ubuntu**: `.deb` packages via `apt`/`dpkg`
-  - **Fedora**: `.rpm` packages via `dnf`
-  - **Arch Linux**: `.tar.zst` packages via `pacman`
-  All are built through the GitHub Actions CI workflow (see below).
-- **macOS** — pre-built macOS apps are available on [EbadJunaid's fork releases](https://github.com/EbadJunaid/deepscreen-viewer/releases). Support is tracked in the [`macos-support`](https://github.com/Abdullah-Masood-05/Vigilo/tree/macos-support) branch.
+- **Windows**: `.exe` (NSIS setup) and `.msi` (Wix installer) for x86_64.
+- **macOS**: `.dmg` package for Apple Silicon (aarch64).
+- **Linux**: Pre-built packages for the three main distribution families:
+  - **Debian / Ubuntu**: `.deb` packages via `apt` / `dpkg`
+  - **Fedora / RHEL**: `.rpm` packages via `dnf` / `rpm`
+  - **Arch Linux**: `.pkg.tar.zst` packages via `pacman`
+  - **Generic Linux**: `.AppImage` portable executable
 
 ## CI / CD
 
-This project uses GitHub Actions for CI. The workflow:
+The GitHub Actions workflow runs on every pull request and push to `main`:
 
-- Runs on every push to `main` and on pull requests
-- Checks that `cargo clippy --all-targets` and `cargo test --release` pass
-- Builds Tauri installers for Windows, Linux, and macOS
-- Publishes Linux `.deb`, `.rpm`, and `.tar.zst` packages to the GitHub Release assets
-- Uploads macOS `.dmg` builds
+- Runs `cargo clippy --all-targets --release` and `cargo test --release`.
+- Builds release packages across Windows, macOS (Apple Silicon), and Linux.
+- Packages Debian `.deb`, Fedora `.rpm`, Arch Linux `.pkg.tar.zst`, and `.AppImage` on Linux.
+- Packages Windows `.exe` and `.msi` installers.
+- Packages macOS `.dmg` disk images.
+- Publishes all installers directly to GitHub Releases.
 
-The full `.github/workflows/ci.yml` configuration is available in the repository.
+## Licence
 
 AGPL-3.0. Model weights carry their own licences, see the table above.

@@ -22,10 +22,10 @@ use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
 use arc_swap::ArcSwap;
-use deepscreen_viewer::config::Config;
-use deepscreen_viewer::preview::{self, PreviewSlot, PreviewStats};
-use deepscreen_viewer::types::{PipelineStats, Signals};
-use deepscreen_viewer::{Detector, SourceSpec};
+use vigilo::config::Config;
+use vigilo::preview::{self, PreviewSlot, PreviewStats};
+use vigilo::types::{PipelineStats, Signals};
+use vigilo::{Detector, SourceSpec};
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 
@@ -178,7 +178,7 @@ fn main() {
             // it does for models.
             let ffmpeg_dir = resolve_ffmpeg_dir(&handle);
             tracing::info!(dir = ?ffmpeg_dir, "ffmpeg directory");
-            deepscreen_viewer::capture::set_ffmpeg_dir(ffmpeg_dir);
+            vigilo::capture::set_ffmpeg_dir(ffmpeg_dir);
 
             let preview_slot: PreviewSlot = Arc::new(ArcSwap::from_pointee(None));
             let preview_stats = Arc::new(PreviewStats::default());
@@ -188,7 +188,7 @@ fn main() {
             // person reading this has never seen the app and needs an
             // instruction, not a diagnosis.
             let (detector, startup_error, blocked) =
-                if args.source.starts_with("dir:") || deepscreen_viewer::capture::ffmpeg_available()
+                if args.source.starts_with("dir:") || vigilo::capture::ffmpeg_available()
                 {
                     match start_detector(&args, model_dir.as_deref()) {
                         Ok(d) => (Some(Arc::new(d)), None, false),
@@ -201,7 +201,7 @@ fn main() {
                     tracing::error!("ffmpeg is not on PATH");
                     (
                         None,
-                        Some(deepscreen_viewer::capture::FFMPEG_MISSING_HELP.to_string()),
+                        Some(vigilo::capture::FFMPEG_MISSING_HELP.to_string()),
                         true,
                     )
                 };
@@ -295,7 +295,7 @@ fn resolve_ffmpeg_dir(handle: &tauri::AppHandle) -> Option<std::path::PathBuf> {
 fn start_detector(
     args: &Args,
     model_dir: Option<&std::path::Path>,
-) -> Result<Detector, deepscreen_viewer::DetectError> {
+) -> Result<Detector, vigilo::DetectError> {
     let mut config = match &args.config {
         Some(path) => Config::load(path)?,
         None => Config::default(),
@@ -306,7 +306,7 @@ fn start_detector(
     match model_dir {
         Some(dir) => config.models.fill_missing_from_dir(dir),
         None => {
-            return Err(deepscreen_viewer::DetectError::Config(
+            return Err(vigilo::DetectError::Config(
                 "no model directory found — the app could not locate its bundled models".into(),
             ))
         }
@@ -321,7 +321,7 @@ fn start_detector(
 }
 
 /// Turn a `DetectError` into something a person can act on.
-fn explain(e: &deepscreen_viewer::DetectError) -> String {
+fn explain(e: &vigilo::DetectError) -> String {
     let base = e.to_string();
     if base.contains("Could not run graph") || base.contains("already in use") {
         format!(

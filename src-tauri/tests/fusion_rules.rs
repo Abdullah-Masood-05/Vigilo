@@ -10,12 +10,12 @@
 //! regression is caught by `cargo test` rather than by a person staring at a
 //! HUD wondering why nothing fired.
 
-use deepscreen_viewer::fusion;
-use deepscreen_viewer::types::{
+use vigilo::fusion;
+use vigilo::types::{
     BBox, Event, FaceDetection, GateReason, Gaze, HeadPose, ObjectDetection, SignalCoverage,
     Signals, SlotState, ViolationKind,
 };
-use deepscreen_viewer::Config;
+use vigilo::Config;
 
 /// A frame with a face present and nothing going on.
 fn calm_frame(seq: u64, t_ms: u64) -> Signals {
