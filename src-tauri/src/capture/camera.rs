@@ -41,6 +41,7 @@ pub struct CameraDevice {
     pub alt_name: Option<String>,
 }
 
+#[cfg(windows)]
 impl CameraDevice {
     /// What to hand ffmpeg after `video=`.
     fn selector(&self) -> &str {
@@ -228,6 +229,7 @@ pub fn list_formats(device: &CameraDevice) -> Result<Vec<CameraFormat>> {
 /// Audio devices are dropped. Devices ffmpeg tags `(none)` are kept — virtual
 /// cameras (OBS and friends) report that way, and excluding them would make
 /// `camera:<index>` mean something different from what the user just read.
+#[cfg(windows)]
 fn parse_dshow_devices(text: &str) -> Vec<CameraDevice> {
     let mut devices: Vec<CameraDevice> = Vec::new();
     let mut last_was_kept = false;
@@ -283,6 +285,7 @@ fn parse_dshow_devices(text: &str) -> Vec<CameraDevice> {
 ///
 /// The `max` figures are the ones worth reporting — that is the ceiling the
 /// mode actually offers.
+#[cfg(windows)]
 fn parse_dshow_formats(text: &str) -> Vec<CameraFormat> {
     let mut formats = Vec::new();
 
@@ -307,6 +310,7 @@ fn parse_dshow_formats(text: &str) -> Vec<CameraFormat> {
 
 /// Strip the `[in#0 @ 0x...]` / `[dshow @ 0x...]` prefix ffmpeg puts on every
 /// line. The tag has changed across ffmpeg versions, so match the shape.
+#[cfg(windows)]
 fn strip_ffmpeg_prefix(line: &str) -> &str {
     let trimmed = line.trim();
     if trimmed.starts_with('[') {
@@ -317,6 +321,7 @@ fn strip_ffmpeg_prefix(line: &str) -> &str {
     trimmed
 }
 
+#[cfg(windows)]
 fn field_after<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let start = line.find(key)? + key.len();
     let rest = &line[start..];
@@ -324,6 +329,7 @@ fn field_after<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     Some(&rest[..end]).filter(|s| !s.is_empty())
 }
 
+#[cfg(windows)]
 fn unquote(s: &str) -> Option<&str> {
     s.strip_prefix('"')?.strip_suffix('"')
 }
