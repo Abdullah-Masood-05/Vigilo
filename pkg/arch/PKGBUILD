@@ -36,6 +36,9 @@ package() {
     # Desktop entry
     install -Dm644 "$srcdir/vigilo.desktop" "$pkgdir/usr/share/applications/vigilo.desktop"
 
-    # Icon
+    # Icons
+    install -Dm644 "$srcdir/icon.png" "$pkgdir/usr/share/pixmaps/vigilo.png"
+    install -Dm644 "$srcdir/icon.png" "$pkgdir/usr/share/icons/hicolor/512x512/apps/vigilo.png"
+    install -Dm644 "$srcdir/icon.png" "$pkgdir/usr/share/icons/hicolor/128x128/apps/vigilo.png"
     install -Dm644 "$srcdir/icon.png" "$pkgdir/usr/share/icons/hicolor/32x32/apps/vigilo.png"
 }
