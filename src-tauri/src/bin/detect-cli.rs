@@ -22,22 +22,22 @@ use std::time::Instant;
 
 use clap::{Parser, Subcommand};
 
-use deepscreen_viewer::capture::camera;
-use deepscreen_viewer::config::Config;
-use deepscreen_viewer::models::face::YuNet;
-use deepscreen_viewer::models::gaze::GazeNet;
-use deepscreen_viewer::models::objects::YoloxNano;
-use deepscreen_viewer::models::pose::HeadPoseNet;
-use deepscreen_viewer::error::{DetectError, Result};
-use deepscreen_viewer::report::Latencies;
+use vigilo::capture::camera;
+use vigilo::config::Config;
+use vigilo::models::face::YuNet;
+use vigilo::models::gaze::GazeNet;
+use vigilo::models::objects::YoloxNano;
+use vigilo::models::pose::HeadPoseNet;
+use vigilo::error::{DetectError, Result};
+use vigilo::report::Latencies;
 use std::collections::BTreeMap;
 
-use deepscreen_viewer::models::gaze::GazeOutcome;
-use deepscreen_viewer::fusion;
-use deepscreen_viewer::types::{
+use vigilo::models::gaze::GazeOutcome;
+use vigilo::fusion;
+use vigilo::types::{
     Event, FaceDetection, GateReason, SignalCoverage, Signals, SlotState, ViolationKind,
 };
-use deepscreen_viewer::{Detector, SourceSpec};
+use vigilo::{Detector, SourceSpec};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -454,7 +454,7 @@ fn cmd_live(cfg: &Config, source: &str, opts: LiveOpts) -> Result<()> {
 /// preview window. Deliberately outside any hot path — this encodes on the
 /// capture thread and is only ever driven by an explicit `--save-every`.
 fn save_frame(
-    frame: &deepscreen_viewer::Frame,
+    frame: &vigilo::Frame,
     detections: &[FaceDetection],
     dir: &std::path::Path,
 ) -> Result<()> {
@@ -488,7 +488,7 @@ fn put(img: &mut image::RgbImage, x: i64, y: i64, colour: [u8; 3]) {
     }
 }
 
-fn draw_rect(img: &mut image::RgbImage, b: &deepscreen_viewer::BBox, colour: [u8; 3]) {
+fn draw_rect(img: &mut image::RgbImage, b: &vigilo::BBox, colour: [u8; 3]) {
     let (x0, y0) = (b.x.round() as i64, b.y.round() as i64);
     let (x1, y1) = ((b.x + b.w).round() as i64, (b.y + b.h).round() as i64);
     // Two pixels thick, so it survives JPEG at a glance.
@@ -783,7 +783,7 @@ fn bench_models(
     out.push_str("|---|---|---|---|---|---|---|\n");
 
     for path in &paths {
-        match deepscreen_viewer::models::bench_model(path, &cfg.runtime, iters as u32) {
+        match vigilo::models::bench_model(path, &cfg.runtime, iters as u32) {
             Ok(r) => {
                 let shape = r
                     .input_shapes
@@ -1020,7 +1020,7 @@ fn parse_secs(s: &str, spec: &str) -> Result<f32> {
 
 fn cmd_inspect(paths: &[PathBuf]) -> Result<()> {
     for path in paths {
-        let info = deepscreen_viewer::models::inspect(path)?;
+        let info = vigilo::models::inspect(path)?;
         println!("\n{}", info.path.display());
         println!("  {:.1} KB", info.size_bytes as f64 / 1024.0);
 

@@ -14,7 +14,8 @@ provides=('deepscreen-viewer')
 # before makepkg runs.
 
 package() {
-    install -Dm755 "$srcdir/deepscreen-viewer" "$pkgdir/usr/bin/deepscreen-viewer"
+    install -Dm755 "$srcdir/vigilo" "$pkgdir/usr/bin/vigilo"
+    ln -sf /usr/bin/vigilo "$pkgdir/usr/bin/deepscreen-viewer"
 
     # Bundle models
     install -d "$pkgdir/usr/share/vigilo/models"

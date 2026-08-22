@@ -27,11 +27,11 @@
 
 use std::sync::Arc;
 
-use deepscreen_viewer::config::Config;
-use deepscreen_viewer::models::face::YuNet;
-use deepscreen_viewer::models::gaze::{GazeNet, GazeOutcome};
-use deepscreen_viewer::models::pose::HeadPoseNet;
-use deepscreen_viewer::types::Frame;
+use vigilo::config::Config;
+use vigilo::models::face::YuNet;
+use vigilo::models::gaze::{GazeNet, GazeOutcome};
+use vigilo::models::pose::HeadPoseNet;
+use vigilo::types::Frame;
 
 const MODEL_DIR: &str = "models";
 const FIXTURE_DIR: &str = "samples/faces";

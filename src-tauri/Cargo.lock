@@ -785,29 +785,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "deepscreen-viewer"
-version = "0.1.0"
-dependencies = [
- "arc-swap",
- "clap",
- "crossbeam-channel",
- "fast_image_resize",
- "image",
- "ndarray",
- "ort",
- "serde",
- "serde_json",
- "tauri",
- "tauri-build",
- "tempfile",
- "thiserror 2.0.19",
- "tiny_http",
- "toml 0.8.23",
- "tracing",
- "tracing-subscriber",
-]
-
-[[package]]
 name = "der"
 version = "0.8.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -4898,6 +4875,29 @@ name = "version_check"
 version = "0.9.5"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0b928f33d975fc6ad9f86c8f283853ad26bdd5b10b7f1542aa2fa15e2289105a"
+
+[[package]]
+name = "vigilo"
+version = "0.1.0"
+dependencies = [
+ "arc-swap",
+ "clap",
+ "crossbeam-channel",
+ "fast_image_resize",
+ "image",
+ "ndarray",
+ "ort",
+ "serde",
+ "serde_json",
+ "tauri",
+ "tauri-build",
+ "tempfile",
+ "thiserror 2.0.19",
+ "tiny_http",
+ "toml 0.8.23",
+ "tracing",
+ "tracing-subscriber",
+]
 
 [[package]]
 name = "vswhom"

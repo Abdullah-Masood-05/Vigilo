@@ -1,8 +1,8 @@
 {
   "$schema": "https://schema.tauri.app/config/2",
-  "productName": "DeepScreen Viewer",
+  "productName": "Vigilo",
   "version": "0.1.0",
-  "identifier": "com.deepscreen.viewer",
+  "identifier": "com.vigilo.app",
   "build": {
     "frontendDist": "../dist"
   },
@@ -11,7 +11,7 @@
     "windows": [
       {
         "label": "main",
-        "title": "DeepScreen Viewer",
+        "title": "Vigilo",
         "width": 1340,
         "height": 880,
         "resizable": true
