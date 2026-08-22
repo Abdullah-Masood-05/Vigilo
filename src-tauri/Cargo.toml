@@ -80,6 +80,7 @@ tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 # `copy-dylibs` has to come back with it: ONNX Runtime itself is still
 # statically linked, but DirectML.dll is a real dynamic dependency and the app
 # will not start without it beside the exe.
+[target.'cfg(windows)'.dependencies]
 ort = { version = "2.0.0-rc.12", default-features = false, features = [
     "std",
     "ndarray",
@@ -90,6 +91,17 @@ ort = { version = "2.0.0-rc.12", default-features = false, features = [
     "directml",
     "copy-dylibs",
 ] }
+
+[target.'cfg(not(windows))'.dependencies]
+ort = { version = "2.0.0-rc.12", default-features = false, features = [
+    "std",
+    "ndarray",
+    "tracing",
+    "download-binaries",
+    "tls-native",
+    "api-24",
+] }
+
 ndarray = "0.17"
 
 [dev-dependencies]
