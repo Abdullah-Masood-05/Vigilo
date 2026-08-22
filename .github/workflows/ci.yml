@@ -171,8 +171,8 @@ jobs:
       - name: Publish GitHub Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v${{ github.run_number }}
-          name: "Vigilo v${{ github.run_number }}"
+          tag_name: v0.1.0
+          name: "Vigilo v0.1.0"
           files: |
             downloaded-installers/*
           generate_release_notes: false
