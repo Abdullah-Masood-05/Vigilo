@@ -390,10 +390,8 @@ impl CameraSource {
             if cfg.prefer_mjpeg {
                 cmd.args(["-input_format", "mjpeg"]);
             }
-            let dev = device
-                .alt_name
-                .as_deref()
-                .unwrap_or(&format!("/dev/video{}", device.index));
+            let default_dev = format!("/dev/video{}", device.index);
+            let dev = device.alt_name.as_deref().unwrap_or(&default_dev);
             cmd.args(["-video_size", &format!("{}x{}", cfg.width, cfg.height)])
                 .args(["-framerate", &cfg.fps.to_string()])
                 .arg("-i")
