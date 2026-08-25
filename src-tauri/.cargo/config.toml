@@ -1,0 +1,5 @@
+# Link with rust-lld instead of MSVC's link.exe. rust-lld ships with the
+# rustup toolchain (no extra install), and rustc knows to invoke it in COFF
+# flavor for the msvc target, so no wrapper flags are needed.
+[target.x86_64-pc-windows-msvc]
+linker = "rust-lld"
