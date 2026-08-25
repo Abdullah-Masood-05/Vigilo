@@ -51,9 +51,20 @@ If you have npm or pnpm instead, they work identically (`npm install`,
 | | Why | How to get it |
 |---|---|---|
 | **Rust 1.97+** | builds the app | [rustup.rs](https://rustup.rs) |
-| ffmpeg | reads the webcam via DirectShow — **committed to the repo**, nothing to fetch | see "ffmpeg" below |
+| **Linker (Windows)** | fast linking with rust-lld | `rustup component add llvm-tools` or [MSVC Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) |
+| ffmpeg | reads the webcam via DirectShow (committed to the repo, nothing to fetch) | see "ffmpeg" below |
 | WebView2 | renders the UI | preinstalled on Windows 10/11 |
 | bun *(optional)* | installs the Tauri CLI | [bun.sh](https://bun.sh) |
+
+### Windows Linker Setup
+
+The project uses `rust-lld` for faster build link times. Windows users can choose either option:
+
+- **Option A (Recommended):** Install LLVM tools through rustup:
+  ```powershell
+  rustup component add llvm-tools
+  ```
+- **Option B:** Install [Microsoft C++ Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/).
 
 **The installer has no prerequisites.** ffmpeg ships inside it, and the app
 prefers its own copy over anything on `PATH` — a stranger's ancient ffmpeg, or
