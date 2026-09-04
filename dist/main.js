@@ -461,4 +461,306 @@ el.enrol.addEventListener("click", async () => {
   }
 });
 
+// ---------------------------------------------------------------------------
+// ---------------------------------------------------------------------------
+// Settings panel management
+// ---------------------------------------------------------------------------
+
+const settingsEl = {
+  modal: document.getElementById("settings-modal"),
+  btnOpen: document.getElementById("btn-settings"),
+  btnClose: document.getElementById("btn-settings-close"),
+  btnCancel: document.getElementById("btn-settings-cancel"),
+  btnSave: document.getElementById("btn-settings-save"),
+  btnReset: document.getElementById("btn-settings-reset"),
+  feedback: document.getElementById("settings-feedback"),
+  devToggle: document.getElementById("dev-toggle"),
+  devPanel: document.getElementById("dev-panel"),
+
+  // User fields
+  noFaceHold: document.getElementById("set-noface-hold"),
+  multiFaceHold: document.getElementById("set-multiface-hold"),
+  identityScore: document.getElementById("set-identity-score"),
+  identityMismatches: document.getElementById("set-identity-mismatches"),
+
+  headYaw: document.getElementById("set-head-yaw"),
+  headPitchUp: document.getElementById("set-head-pitch-up"),
+  headPitchDown: document.getElementById("set-head-pitch-down"),
+  headHold: document.getElementById("set-head-hold"),
+
+  gazeYaw: document.getElementById("set-gaze-yaw"),
+  gazePitchUp: document.getElementById("set-gaze-pitch-up"),
+  gazePitchDown: document.getElementById("set-gaze-pitch-down"),
+  gazeHold: document.getElementById("set-gaze-hold"),
+
+  objHold: document.getElementById("set-obj-hold"),
+  objScore: document.getElementById("set-obj-score"),
+  objHalfLife: document.getElementById("set-obj-half-life"),
+  signalLostTimeout: document.getElementById("set-signal-lost"),
+
+  // Severities
+  sevNoFace: document.getElementById("sev-no_face"),
+  sevMultiFace: document.getElementById("sev-multiple_faces"),
+  sevHead: document.getElementById("sev-head_turned_away"),
+  sevGaze: document.getElementById("sev-gaze_off_screen"),
+  sevObject: document.getElementById("sev-prohibited_object"),
+  sevIdentity: document.getElementById("sev-identity_mismatch"),
+  sevLost: document.getElementById("sev-signal_lost"),
+
+  // Dev fields
+  faceScore: document.getElementById("dev-face-score"),
+  faceNms: document.getElementById("dev-face-nms"),
+  objConf: document.getElementById("dev-obj-conf"),
+  objNms: document.getElementById("dev-obj-nms"),
+
+  poseEma: document.getElementById("dev-pose-ema"),
+  gazeEma: document.getElementById("dev-gaze-ema"),
+  blinkEar: document.getElementById("dev-blink-ear"),
+  gazeMinFace: document.getElementById("dev-gaze-min-face"),
+
+  faceHz: document.getElementById("dev-face-hz"),
+  objHz: document.getElementById("dev-obj-hz"),
+  identityHz: document.getElementById("dev-identity-hz"),
+  intraThreads: document.getElementById("dev-intra-threads"),
+};
+
+let currentSettingsPayload = null;
+
+function showFeedback(msg, isError = false) {
+  if (!settingsEl.feedback) return;
+  settingsEl.feedback.textContent = msg;
+  settingsEl.feedback.className = `settings-feedback ${isError ? "error" : "success"}`;
+  settingsEl.feedback.hidden = false;
+  if (!isError) {
+    setTimeout(() => {
+      if (settingsEl.feedback) settingsEl.feedback.hidden = true;
+    }, 4500);
+  }
+}
+
+function clearFeedback() {
+  if (settingsEl.feedback) {
+    settingsEl.feedback.hidden = true;
+    settingsEl.feedback.textContent = "";
+  }
+}
+
+function populateSettingsForm(payload) {
+  if (!payload) return;
+  currentSettingsPayload = payload;
+  const u = payload.user || {};
+  const d = payload.dev || {};
+
+  // User fields (convert milliseconds to seconds for readable display)
+  if (settingsEl.noFaceHold) settingsEl.noFaceHold.value = (Number(u.no_face_hold_ms || 2500) / 1000).toFixed(1);
+  if (settingsEl.multiFaceHold) settingsEl.multiFaceHold.value = (Number(u.multi_face_hold_ms || 2000) / 1000).toFixed(1);
+  if (settingsEl.identityScore) settingsEl.identityScore.value = (u.identity_cosine_enter ?? 0.35).toFixed(2);
+  if (settingsEl.identityMismatches) settingsEl.identityMismatches.value = u.identity_consecutive_failures ?? 3;
+
+  if (settingsEl.headYaw) settingsEl.headYaw.value = (u.pose_yaw_enter_deg ?? 30.0).toFixed(1);
+  if (settingsEl.headPitchUp) settingsEl.headPitchUp.value = (u.pose_pitch_enter_deg ?? 25.0).toFixed(1);
+  if (settingsEl.headPitchDown) settingsEl.headPitchDown.value = (u.pose_pitch_exit_deg ?? 20.0).toFixed(1);
+  if (settingsEl.headHold) settingsEl.headHold.value = (Number(u.pose_hold_ms || 2000) / 1000).toFixed(1);
+
+  if (settingsEl.gazeYaw) settingsEl.gazeYaw.value = (u.gaze_yaw_enter_deg ?? 25.0).toFixed(1);
+  if (settingsEl.gazePitchUp) settingsEl.gazePitchUp.value = (u.gaze_pitch_enter_deg ?? 20.0).toFixed(1);
+  if (settingsEl.gazePitchDown) settingsEl.gazePitchDown.value = (u.gaze_pitch_exit_deg ?? 18.0).toFixed(1);
+  if (settingsEl.gazeHold) settingsEl.gazeHold.value = (Number(u.gaze_hold_ms || 1000) / 1000).toFixed(1);
+
+  if (settingsEl.objHold) settingsEl.objHold.value = (Number(u.object_hold_ms || 1000) / 1000).toFixed(1);
+  if (settingsEl.objScore) settingsEl.objScore.value = (u.object_enter_score ?? 1.0).toFixed(1);
+  if (settingsEl.objHalfLife) settingsEl.objHalfLife.value = (Number(u.object_score_half_life_ms || 1500) / 1000).toFixed(1);
+  if (settingsEl.signalLostTimeout) settingsEl.signalLostTimeout.value = (Number(u.signal_lost_ms || 5000) / 1000).toFixed(1);
+
+  // Severities (snake_case)
+  const sevs = u.severity || {};
+  if (settingsEl.sevNoFace && sevs.no_face) settingsEl.sevNoFace.value = sevs.no_face.toLowerCase();
+  if (settingsEl.sevMultiFace && sevs.multiple_faces) settingsEl.sevMultiFace.value = sevs.multiple_faces.toLowerCase();
+  if (settingsEl.sevHead && sevs.head_turned_away) settingsEl.sevHead.value = sevs.head_turned_away.toLowerCase();
+  if (settingsEl.sevGaze && sevs.gaze_off_screen) settingsEl.sevGaze.value = sevs.gaze_off_screen.toLowerCase();
+  if (settingsEl.sevObject && sevs.prohibited_object) settingsEl.sevObject.value = sevs.prohibited_object.toLowerCase();
+  if (settingsEl.sevIdentity && sevs.identity_mismatch) settingsEl.sevIdentity.value = sevs.identity_mismatch.toLowerCase();
+  if (settingsEl.sevLost && sevs.signal_lost) settingsEl.sevLost.value = sevs.signal_lost.toLowerCase();
+
+  // Dev fields
+  if (settingsEl.faceScore) settingsEl.faceScore.value = (d.face_min_score ?? 0.6).toFixed(2);
+  if (settingsEl.faceNms) settingsEl.faceNms.value = (d.face_nms_threshold ?? 0.3).toFixed(2);
+  if (settingsEl.objConf) settingsEl.objConf.value = (d.object_min_score ?? 0.3).toFixed(2);
+  if (settingsEl.objNms) settingsEl.objNms.value = (d.object_nms_threshold ?? 0.45).toFixed(2);
+
+  if (settingsEl.poseEma) settingsEl.poseEma.value = (d.pose_ema_alpha ?? 0.35).toFixed(2);
+  if (settingsEl.gazeEma) settingsEl.gazeEma.value = (d.gaze_ema_alpha ?? 0.3).toFixed(2);
+  if (settingsEl.blinkEar) settingsEl.blinkEar.value = (d.gaze_blink_ear_floor ?? 0.18).toFixed(2);
+  if (settingsEl.gazeMinFace) settingsEl.gazeMinFace.value = (d.gaze_min_face_score ?? 0.5).toFixed(2);
+
+  if (settingsEl.faceHz) settingsEl.faceHz.value = (d.cadence_face_hz ?? 15.0).toFixed(1);
+  if (settingsEl.objHz) settingsEl.objHz.value = (d.cadence_object_hz ?? 1.0).toFixed(1);
+  if (settingsEl.identityHz) settingsEl.identityHz.value = (d.cadence_identity_hz ?? 0.2).toFixed(2);
+  if (settingsEl.intraThreads) settingsEl.intraThreads.value = d.runtime_intra_threads_small ?? 2;
+}
+
+function serializeSettingsForm() {
+  const num = (input, def) => {
+    const v = parseFloat(input?.value);
+    return isNaN(v) ? def : v;
+  };
+  const intVal = (input, def) => {
+    const v = parseInt(input?.value, 10);
+    return isNaN(v) ? def : v;
+  };
+
+  // Start with full deep clone of existing payload to preserve unedited internal fields
+  const payload = JSON.parse(JSON.stringify(currentSettingsPayload || { user: {}, dev: {} }));
+  payload.user = payload.user || {};
+  payload.dev = payload.dev || {};
+
+  // Convert seconds back to integer milliseconds for backend
+  payload.user.no_face_hold_ms = Math.round(num(settingsEl.noFaceHold, 2.5) * 1000);
+  payload.user.no_face_clear_ms = Math.max(500, Math.round(payload.user.no_face_hold_ms * 0.4));
+  payload.user.never_seen_ms = Math.max(payload.user.no_face_hold_ms, payload.user.never_seen_ms || 4000);
+  payload.user.multi_face_hold_ms = Math.round(num(settingsEl.multiFaceHold, 2.0) * 1000);
+  payload.user.multi_face_clear_ms = Math.max(500, Math.round(payload.user.multi_face_hold_ms * 0.4));
+
+  const headYaw = num(settingsEl.headYaw, 30.0);
+  payload.user.pose_yaw_enter_deg = headYaw;
+  payload.user.pose_yaw_exit_deg = Math.max(5.0, headYaw - 7.0);
+
+  const headPitch = num(settingsEl.headPitchUp, 25.0);
+  payload.user.pose_pitch_enter_deg = headPitch;
+  payload.user.pose_pitch_exit_deg = Math.max(5.0, headPitch - 7.0);
+
+  payload.user.pose_hold_ms = Math.round(num(settingsEl.headHold, 2.0) * 1000);
+  payload.user.pose_clear_ms = Math.max(300, Math.round(payload.user.pose_hold_ms * 0.35));
+
+  const gazeYaw = num(settingsEl.gazeYaw, 25.0);
+  payload.user.gaze_yaw_enter_deg = gazeYaw;
+  payload.user.gaze_yaw_exit_deg = Math.max(5.0, gazeYaw - 7.0);
+
+  const gazePitch = num(settingsEl.gazePitchUp, 20.0);
+  payload.user.gaze_pitch_enter_deg = gazePitch;
+  payload.user.gaze_pitch_exit_deg = Math.max(5.0, gazePitch - 7.0);
+
+  payload.user.gaze_hold_ms = Math.round(num(settingsEl.gazeHold, 1.0) * 1000);
+  payload.user.gaze_clear_ms = Math.max(300, Math.round(payload.user.gaze_hold_ms * 0.35));
+
+  payload.user.object_hold_ms = Math.round(num(settingsEl.objHold, 1.0) * 1000);
+  payload.user.object_clear_ms = Math.max(500, Math.round(payload.user.object_hold_ms * 0.5));
+  payload.user.object_enter_score = num(settingsEl.objScore, 1.0);
+  payload.user.object_clear_score = Math.max(0.1, payload.user.object_enter_score * 0.5);
+  payload.user.object_score_half_life_ms = Math.round(num(settingsEl.objHalfLife, 1.5) * 1000);
+
+  const idScore = num(settingsEl.identityScore, 0.35);
+  payload.user.identity_cosine_enter = idScore;
+  payload.user.identity_cosine_exit = Math.min(0.95, idScore + 0.1);
+  payload.user.identity_consecutive_failures = intVal(settingsEl.identityMismatches, 3);
+
+  payload.user.signal_lost_ms = Math.round(num(settingsEl.signalLostTimeout, 5.0) * 1000);
+  payload.user.signal_lost_clear_ms = Math.max(500, Math.round(payload.user.signal_lost_ms * 0.3));
+
+  // Severity mapping (snake_case)
+  payload.user.severity = {
+    ...(payload.user.severity || {}),
+    no_face: settingsEl.sevNoFace?.value || "high",
+    never_seen: "critical",
+    multiple_faces: settingsEl.sevMultiFace?.value || "critical",
+    prohibited_object: settingsEl.sevObject?.value || "high",
+    head_turned_away: settingsEl.sevHead?.value || "medium",
+    gaze_off_screen: settingsEl.sevGaze?.value || "medium",
+    identity_mismatch: settingsEl.sevIdentity?.value || "critical",
+    signal_lost: settingsEl.sevLost?.value || "high",
+  };
+
+  // Developer options
+  payload.dev.face_min_score = num(settingsEl.faceScore, 0.6);
+  payload.dev.face_nms_threshold = num(settingsEl.faceNms, 0.3);
+  payload.dev.object_min_score = num(settingsEl.objConf, 0.3);
+  payload.dev.object_nms_threshold = num(settingsEl.objNms, 0.45);
+  payload.dev.pose_ema_alpha = num(settingsEl.poseEma, 0.35);
+  payload.dev.gaze_ema_alpha = num(settingsEl.gazeEma, 0.3);
+  payload.dev.gaze_blink_ear_floor = num(settingsEl.blinkEar, 0.18);
+  payload.dev.gaze_min_face_score = num(settingsEl.gazeMinFace, 0.5);
+  payload.dev.cadence_face_hz = num(settingsEl.faceHz, 15.0);
+  payload.dev.cadence_object_hz = num(settingsEl.objHz, 1.0);
+  payload.dev.cadence_identity_hz = num(settingsEl.identityHz, 0.2);
+  payload.dev.runtime_intra_threads_small = intVal(settingsEl.intraThreads, 2);
+
+  return payload;
+}
+
+async function openSettings() {
+  clearFeedback();
+  if (settingsEl.modal) settingsEl.modal.hidden = false;
+  try {
+    const payload = await invoke("get_thresholds");
+    populateSettingsForm(payload);
+  } catch (err) {
+    showFeedback(`Failed to load thresholds: ${err}`, true);
+  }
+}
+
+function closeSettings() {
+  if (settingsEl.modal) settingsEl.modal.hidden = true;
+  clearFeedback();
+}
+
+async function saveSettings() {
+  clearFeedback();
+  if (settingsEl.btnSave) {
+    settingsEl.btnSave.disabled = true;
+    settingsEl.btnSave.textContent = "Saving…";
+  }
+  try {
+    const payload = serializeSettingsForm();
+    const updated = await invoke("set_thresholds", { payload });
+    populateSettingsForm(updated);
+    showFeedback("Thresholds applied in real-time and saved to disk.");
+  } catch (err) {
+    showFeedback(`Error saving thresholds: ${err}`, true);
+  } finally {
+    if (settingsEl.btnSave) {
+      settingsEl.btnSave.disabled = false;
+      settingsEl.btnSave.textContent = "Apply & Save";
+    }
+  }
+}
+
+async function resetSettings() {
+  if (!confirm("Reset all thresholds to factory defaults?")) return;
+  clearFeedback();
+  if (settingsEl.btnReset) settingsEl.btnReset.disabled = true;
+  try {
+    const defaultPayload = await invoke("reset_thresholds");
+    populateSettingsForm(defaultPayload);
+    showFeedback("Thresholds reset to factory defaults and applied.");
+  } catch (err) {
+    showFeedback(`Error resetting thresholds: ${err}`, true);
+  } finally {
+    if (settingsEl.btnReset) settingsEl.btnReset.disabled = false;
+  }
+}
+
+if (settingsEl.btnOpen) settingsEl.btnOpen.addEventListener("click", openSettings);
+if (settingsEl.btnClose) settingsEl.btnClose.addEventListener("click", closeSettings);
+if (settingsEl.btnCancel) settingsEl.btnCancel.addEventListener("click", closeSettings);
+if (settingsEl.btnSave) settingsEl.btnSave.addEventListener("click", saveSettings);
+if (settingsEl.btnReset) settingsEl.btnReset.addEventListener("click", resetSettings);
+
+if (settingsEl.devToggle && settingsEl.devPanel) {
+  settingsEl.devToggle.addEventListener("change", (e) => {
+    settingsEl.devPanel.hidden = !e.target.checked;
+  });
+}
+
+// Close on backdrop click or Escape key
+if (settingsEl.modal) {
+  settingsEl.modal.addEventListener("click", (e) => {
+    if (e.target === settingsEl.modal) closeSettings();
+  });
+}
+window.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && settingsEl.modal && !settingsEl.modal.hidden) {
+    closeSettings();
+  }
+});
+
 boot();
