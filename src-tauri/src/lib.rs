@@ -37,6 +37,7 @@
 
 pub mod capture;
 pub mod config;
+pub mod config_store;
 pub mod direction;
 pub mod error;
 pub mod fusion;
@@ -47,7 +48,7 @@ pub mod report;
 pub mod types;
 
 pub use capture::{FrameSource, SourceSpec};
-pub use config::Config;
+pub use config::{Config, DevThresholds, SettingsPayload, UserThresholds};
 pub use direction::{Axes, DebugDirections, DirectionTracker, FrameOfReference, Horizontal, Vertical};
 pub use error::{DetectError, Result};
 pub use pipeline::{Detected, Detector, DetectorBuilder};

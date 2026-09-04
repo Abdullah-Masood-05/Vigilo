@@ -92,18 +92,19 @@ pub(super) fn detect_loop(
     shared: Arc<Shared>,
     events: Sender<Event>,
 ) {
-    let period = Duration::from_secs_f64(1.0 / cfg.cadence.face_hz.max(0.1));
+    let mut period = Duration::from_secs_f64(1.0 / cfg.cadence.face_hz.max(0.1));
     let started = Instant::now();
     let mut last_seen = 0u64;
     let mut consecutive_failures = 0u32;
     let mut degraded = false;
+    let mut current_cfg = shared.config.load_full();
     // Hysteresis state for the debug direction readout. Owned by this thread
     // because it is the only one that writes it, and updated in frame order.
-    let mut directions = DirectionTracker::new(&cfg.thresholds.debug_direction);
+    let mut directions = DirectionTracker::new(&current_cfg.thresholds.debug_direction);
     // Cursor over object results, so each is reported on exactly one frame.
     let mut last_object_seq = 0u64;
     let mut last_identity_seq = 0u64;
-    let mut fusion = crate::fusion::FusionEngine::new(&cfg);
+    let mut fusion = crate::fusion::FusionEngine::new(&current_cfg);
 
     loop {
         if shared.stop.load(Ordering::Relaxed) {
@@ -112,6 +113,16 @@ pub(super) fn detect_loop(
         // Capture finished and there is nothing new left to process.
         if shared.capture_done.load(Ordering::Relaxed) && shared.bus.latest().seq <= last_seen {
             break;
+        }
+
+        // Hot-reload threshold changes if the configuration was updated
+        let active_cfg = shared.config.load();
+        if !Arc::ptr_eq(&active_cfg, &current_cfg) {
+            current_cfg = shared.config.load_full();
+            fusion = crate::fusion::FusionEngine::new(&current_cfg);
+            directions = DirectionTracker::new(&current_cfg.thresholds.debug_direction);
+            period = Duration::from_secs_f64(1.0 / current_cfg.cadence.face_hz.max(0.1));
+            tracing::info!("detect worker hot-reloaded thresholds");
         }
 
         let tick = Instant::now();
@@ -405,7 +416,7 @@ pub(super) fn identity_loop(mut model: ArcFace, cfg: Config, shared: Arc<Shared>
             if let Some(face) = face {
                 // A low-scoring box is a bad crop, and a bad crop is where
                 // false mismatches come from. Skipping is not a failure.
-                if (face.score as f64) < cfg.thresholds.face.min_score {
+                if (face.score as f64) < shared.config.load().thresholds.face.min_score {
                     shared.publish_identity(None, frame.seq, SlotState::SkippedGated);
                 } else {
                     match model.embed(&frame, &face) {

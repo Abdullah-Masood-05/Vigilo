@@ -1,6 +1,9 @@
 /src-tauri/target
 /src-tauri/gen
 /snapshots
+/*.exe
+/*.msi
+/dist-installers/
 
 # Model weights are bundled at build time, not committed. See README.md.
 /models/*.onnx

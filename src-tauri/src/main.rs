@@ -18,6 +18,7 @@
 // Release builds should not pop a console window behind the app.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
+use std::path::PathBuf;
 use std::sync::atomic::Ordering;
 use std::sync::Arc;
 
@@ -25,7 +26,7 @@ use arc_swap::ArcSwap;
 use vigilo::config::Config;
 use vigilo::preview::{self, PreviewSlot, PreviewStats};
 use vigilo::types::{PipelineStats, Signals};
-use vigilo::{Detector, SourceSpec};
+use vigilo::{Detector, SettingsPayload, SourceSpec};
 use serde::Serialize;
 use tauri::{Emitter, Manager, State};
 
@@ -43,6 +44,7 @@ struct ViewerState {
     /// all until the user installs something. Rendered as a full-screen
     /// instruction instead of an error strip over a dead video pane.
     setup_blocked: bool,
+    app_data_dir: Option<PathBuf>,
 }
 
 /// Everything the HUD and overlay need, in one poll.
@@ -147,6 +149,52 @@ fn enrol(state: State<ViewerState>) -> bool {
     }
 }
 
+#[tauri::command]
+fn get_thresholds(state: State<ViewerState>) -> Result<SettingsPayload, String> {
+    let detector = state.detector.as_ref().ok_or("Detector not running")?;
+    let config = detector.current_config();
+    Ok(SettingsPayload::from_config(&config))
+}
+
+#[tauri::command]
+fn set_thresholds(
+    state: State<ViewerState>,
+    payload: SettingsPayload,
+) -> Result<SettingsPayload, String> {
+    let detector = state.detector.as_ref().ok_or("Detector not running")?;
+    let mut config = (*detector.current_config()).clone();
+    payload.apply_to(&mut config).map_err(|e| e.to_string())?;
+    detector.update_config(config.clone()).map_err(|e| e.to_string())?;
+
+    if let Some(app_data_dir) = &state.app_data_dir {
+        let current_payload = SettingsPayload::from_config(&config);
+        if let Err(e) = vigilo::config_store::save(app_data_dir, &current_payload) {
+            tracing::warn!(error = %e, "failed to persist settings to disk");
+        }
+    }
+
+    Ok(SettingsPayload::from_config(&config))
+}
+
+#[tauri::command]
+fn reset_thresholds(state: State<ViewerState>) -> Result<SettingsPayload, String> {
+    let detector = state.detector.as_ref().ok_or("Detector not running")?;
+    let default_config = Config::default();
+    let default_payload = SettingsPayload::from_config(&default_config);
+
+    let mut config = (*detector.current_config()).clone();
+    default_payload.apply_to(&mut config).map_err(|e| e.to_string())?;
+    detector.update_config(config.clone()).map_err(|e| e.to_string())?;
+
+    if let Some(app_data_dir) = &state.app_data_dir {
+        if let Err(e) = vigilo::config_store::save(app_data_dir, &default_payload) {
+            tracing::warn!(error = %e, "failed to persist reset settings to disk");
+        }
+    }
+
+    Ok(default_payload)
+}
+
 fn main() {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -166,6 +214,7 @@ fn main() {
         // `Config` and knows nothing about how they were found.
         .setup(move |app| {
             let handle = app.handle().clone();
+            let app_data_dir = handle.path().app_data_dir().ok();
             let model_dir = resolve_model_dir(&handle);
             tracing::info!(dir = ?model_dir, "model directory");
 
@@ -187,7 +236,7 @@ fn main() {
             let (detector, startup_error, blocked) =
                 if args.source.starts_with("dir:") || vigilo::capture::ffmpeg_available()
                 {
-                    match start_detector(&args, model_dir.as_deref()) {
+                    match start_detector(&args, model_dir.as_deref(), app_data_dir.as_deref()) {
                         Ok(d) => (Some(Arc::new(d)), None, false),
                         Err(e) => {
                             tracing::error!(error = %e, "could not start detection");
@@ -237,10 +286,18 @@ fn main() {
                 stream_port: port,
                 source: args.source.clone(),
                 startup_error,
+                app_data_dir,
             });
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![stream_port, snapshot, enrol])
+        .invoke_handler(tauri::generate_handler![
+            stream_port,
+            snapshot,
+            enrol,
+            get_thresholds,
+            set_thresholds,
+            reset_thresholds
+        ])
         .run(tauri::generate_context!())
         .expect("error while running viewer");
 }
@@ -307,10 +364,22 @@ fn resolve_ffmpeg_dir(handle: &tauri::AppHandle) -> Option<std::path::PathBuf> {
 fn start_detector(
     args: &Args,
     model_dir: Option<&std::path::Path>,
+    app_data_dir: Option<&std::path::Path>,
 ) -> Result<Detector, vigilo::DetectError> {
     let mut config = match &args.config {
         Some(path) => Config::load(path)?,
-        None => Config::default(),
+        None => {
+            let mut cfg = Config::default();
+            if let Some(dir) = app_data_dir {
+                if let Some(saved) = vigilo::config_store::load(dir) {
+                    tracing::info!("applying saved threshold settings from {}", dir.display());
+                    if let Err(e) = saved.apply_to(&mut cfg) {
+                        tracing::warn!(error = %e, "failed to apply saved settings; falling back to defaults");
+                    }
+                }
+            }
+            cfg
+        }
     };
 
     // The crate takes model paths from `Config` and resolves nothing itself.

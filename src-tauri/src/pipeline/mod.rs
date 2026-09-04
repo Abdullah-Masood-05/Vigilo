@@ -61,6 +61,7 @@ pub struct Detected {
 /// State shared between the threads. Everything here is either atomic,
 /// lock-free, or a mutex that is never held across an inference.
 pub(crate) struct Shared {
+    pub(crate) config: ArcSwap<Config>,
     bus: FrameBus,
     latest: ArcSwap<Option<Arc<Detected>>>,
     events: Sender<Event>,
@@ -132,8 +133,9 @@ pub(crate) struct IdentityResult {
 }
 
 impl Shared {
-    fn new(events: Sender<Event>) -> Self {
+    fn new(events: Sender<Event>, config: Config) -> Self {
         Self {
+            config: ArcSwap::from_pointee(config),
             bus: FrameBus::new(),
             latest: ArcSwap::from_pointee(None),
             events,
@@ -289,12 +291,12 @@ impl DetectorBuilder {
         self.config.validate()?;
         let (tx, rx) = crossbeam_channel::unbounded();
         Ok(Detector {
-            config: self.config,
-            shared: Arc::new(Shared::new(tx)),
+            shared: Arc::new(Shared::new(tx, self.config.clone())),
             events_rx: rx,
             threads: Vec::new(),
             started_at: SystemTime::now(),
             source_name: String::new(),
+            config: self.config,
         })
     }
 }
@@ -315,6 +317,18 @@ pub struct Detector {
 impl Detector {
     pub fn builder() -> DetectorBuilder {
         DetectorBuilder::default()
+    }
+
+    /// Update runtime configuration (thresholds, etc.) and hot-reload.
+    pub fn update_config(&self, config: Config) -> Result<()> {
+        config.validate()?;
+        self.shared.config.store(Arc::new(config));
+        Ok(())
+    }
+
+    /// Read the currently active configuration.
+    pub fn current_config(&self) -> Arc<Config> {
+        self.shared.config.load_full()
     }
 
     /// Load models, then spawn capture and detect.
@@ -608,7 +622,7 @@ impl Detector {
             signals,
             violations: Vec::new(),
             degraded: self.shared.degraded.lock().map(|d| d.clone()).unwrap_or_default(),
-            config: self.config.clone(),
+            config: (**self.shared.config.load()).clone(),
         }
     }
 }
