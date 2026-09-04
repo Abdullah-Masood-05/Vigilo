@@ -33,6 +33,7 @@
         <div class="pill" id="flag-lost">SIGNAL LOST</div>
         <div class="pill" id="flag-degraded">DEGRADED</div>
         <button id="enrol">Enrol face</button>
+        <button id="btn-settings" class="ctrl-btn" title="Open Settings">⚙ Settings</button>
 
         <!--
           Temporary validation aid, not fusion. Every string here is computed
@@ -71,6 +72,330 @@
       <div id="setup" hidden>
         <h1>One thing to install first</h1>
         <pre id="setup-text"></pre>
+      </div>
+
+      <!--
+        Settings Modal / Slide-out Drawer
+        User thresholds exposed by default; Developer options toggle for internal tunables.
+      -->
+      <div id="settings-modal" class="settings-backdrop" hidden>
+        <div class="settings-drawer" role="dialog" aria-labelledby="settings-title">
+          <div class="settings-header">
+            <div class="settings-title-group">
+              <h2 id="settings-title">Threshold Settings</h2>
+              <span class="settings-subtitle">Dynamic Proctoring Configuration</span>
+            </div>
+            <button id="btn-settings-close" class="close-btn" aria-label="Close settings">×</button>
+          </div>
+
+          <div id="settings-feedback" class="settings-feedback" hidden></div>
+
+          <div class="settings-body">
+            <!-- Guide & Explanations Accordion -->
+            <details class="settings-guide-card">
+              <summary class="guide-summary">
+                <span class="guide-icon">ℹ️</span>
+                <span class="guide-title">Settings &amp; Severity Guide (What do these mean?)</span>
+                <span class="guide-arrow">▾</span>
+              </summary>
+              <div class="guide-content">
+                <div class="guide-block">
+                  <h4>Severity Levels Explained</h4>
+                  <ul class="guide-list">
+                    <li><b class="sev-tag sev-low">LOW</b> <span><b>Minor Anomaly:</b> Brief eye wander or small posture adjustment. Logged for informational review; does not interrupt or penalize the student.</span></li>
+                    <li><b class="sev-tag sev-medium">MEDIUM</b> <span><b>Suspicious Action:</b> Prolonged gaze away from screen or head turned toward notes/second display. Flags warning for proctor review.</span></li>
+                    <li><b class="sev-tag sev-high">HIGH</b> <span><b>Probable Misconduct:</b> Candidate absent from chair or unauthorized device (smartphone) visible. Triggers immediate proctor alert.</span></li>
+                    <li><b class="sev-tag sev-critical">CRITICAL</b> <span><b>Severe Violation:</b> Another person assisting in frame, impersonation/proxy test-taker, or camera feed covered. Grounds for exam pause or disqualification.</span></li>
+                  </ul>
+                </div>
+                <div class="guide-block">
+                  <h4>Detection Rules &amp; Thresholds</h4>
+                  <p><b>Gaze Off Screen:</b> Flags when eyes look left/right or up/down past display boundaries. Hold time absorbs natural eye blinking.</p>
+                  <p><b>Head Turned Away:</b> Flags when head orientation exceeds yaw (left/right) or pitch (up/down) limits.</p>
+                  <p><b>No Face / Multi Face:</b> Tracks candidate presence. Hold timer ensures someone briefly bending down doesn't trigger false alarms.</p>
+                  <p><b>Identity Match:</b> Cosine similarity against enrolled face. Scores below threshold indicate a different person.</p>
+                  <p><b>Prohibited Objects:</b> Detects smartphones and devices using accumulated evidence to prevent false alarms from fleeting shadows.</p>
+                  <p><b>Signal Lost:</b> Alerts if camera is covered or video feed stops. A covered lens is never reported as 'all clear'.</p>
+                </div>
+              </div>
+            </details>
+
+            <!-- Section: Presence & Identity -->
+            <div class="settings-section">
+              <h3 class="section-title">Presence &amp; Identity</h3>
+              <div class="setting-grid">
+                <div class="setting-field">
+                  <label for="set-noface-hold">No Face Hold Time (s)</label>
+                  <input type="number" id="set-noface-hold" min="0.1" max="60.0" step="0.1" />
+                  <span class="field-help">Absence before alert (default 2.5s)</span>
+                </div>
+                <div class="setting-field">
+                  <label for="set-multiface-hold">Multiple Faces Hold Time (s)</label>
+                  <input type="number" id="set-multiface-hold" min="0.1" max="60.0" step="0.1" />
+                  <span class="field-help">Time with &gt;1 face (default 2.0s)</span>
+                </div>
+                <div class="setting-field">
+                  <label for="set-identity-score">Identity Match Threshold</label>
+                  <input type="number" id="set-identity-score" min="0.0" max="1.0" step="0.05" />
+                  <span class="field-help">Min cosine similarity (default 0.35)</span>
+                </div>
+                <div class="setting-field">
+                  <label for="set-identity-mismatches">Consecutive Mismatches</label>
+                  <input type="number" id="set-identity-mismatches" min="1" max="20" step="1" />
+                  <span class="field-help">Failed checks before alert (default 3)</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Section: Head Pose Angles & Timers -->
+            <div class="settings-section">
+              <h3 class="section-title">Head Pose Limits</h3>
+              <div class="setting-grid">
+                <div class="setting-field">
+                  <label for="set-head-yaw">Head Yaw Threshold (±°)</label>
+                  <input type="number" id="set-head-yaw" min="5.0" max="80.0" step="1.0" />
+                  <span class="field-help">Looking left / right angle (default 30°)</span>
+                </div>
+                <div class="setting-field">
+                  <label for="set-head-pitch-up">Head Pitch Up (°)</label>
+                  <input type="number" id="set-head-pitch-up" min="5.0" max="60.0" step="1.0" />
+                  <span class="field-help">Head tilted up (default 25°)</span>
+                </div>
+                <div class="setting-field">
+                  <label for="set-head-pitch-down">Head Pitch Down (°)</label>
+                  <input type="number" id="set-head-pitch-down" min="5.0" max="60.0" step="1.0" />
+                  <span class="field-help">Head tilted down (default 25°)</span>
+                </div>
+                <div class="setting-field">
+                  <label for="set-head-hold">Head Turned Hold Time (s)</label>
+                  <input type="number" id="set-head-hold" min="0.1" max="30.0" step="0.1" />
+                  <span class="field-help">Sustained turn before alert (default 2.0s)</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Section: Gaze Angles & Timers -->
+            <div class="settings-section">
+              <h3 class="section-title">Gaze Tracking Limits</h3>
+              <div class="setting-grid">
+                <div class="setting-field">
+                  <label for="set-gaze-yaw">Gaze Yaw Threshold (±°)</label>
+                  <input type="number" id="set-gaze-yaw" min="5.0" max="80.0" step="1.0" />
+                  <span class="field-help">Looking off-screen left/right (default 25°)</span>
+                </div>
+                <div class="setting-field">
+                  <label for="set-gaze-pitch-up">Gaze Pitch Up (°)</label>
+                  <input type="number" id="set-gaze-pitch-up" min="5.0" max="60.0" step="1.0" />
+                  <span class="field-help">Looking above screen (default 20°)</span>
+                </div>
+                <div class="setting-field">
+                  <label for="set-gaze-pitch-down">Gaze Pitch Down (°)</label>
+                  <input type="number" id="set-gaze-pitch-down" min="5.0" max="60.0" step="1.0" />
+                  <span class="field-help">Looking below screen (default 20°)</span>
+                </div>
+                <div class="setting-field">
+                  <label for="set-gaze-hold">Gaze Off Hold Time (s)</label>
+                  <input type="number" id="set-gaze-hold" min="0.1" max="30.0" step="0.1" />
+                  <span class="field-help">Sustained gaze away (default 1.5s)</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Section: Prohibited Objects & Hardware Health -->
+            <div class="settings-section">
+              <h3 class="section-title">Objects &amp; Hardware Health</h3>
+              <div class="setting-grid">
+                <div class="setting-field">
+                  <label for="set-obj-hold">Object Hold Time (s)</label>
+                  <input type="number" id="set-obj-hold" min="0.1" max="30.0" step="0.1" />
+                  <span class="field-help">Prohibited object hold before alert (default 1.0s)</span>
+                </div>
+                <div class="setting-field">
+                  <label for="set-obj-score">Object Trigger Score</label>
+                  <input type="number" id="set-obj-score" min="0.1" max="10.0" step="0.1" />
+                  <span class="field-help">Accumulated evidence score (default 1.0)</span>
+                </div>
+                <div class="setting-field">
+                  <label for="set-obj-half-life">Object Score Half-Life (s)</label>
+                  <input type="number" id="set-obj-half-life" min="0.1" max="10.0" step="0.1" />
+                  <span class="field-help">Evidence decay half-life (default 1.5s)</span>
+                </div>
+                <div class="setting-field">
+                  <label for="set-signal-lost">Signal Lost Timeout (s)</label>
+                  <input type="number" id="set-signal-lost" min="0.5" max="60.0" step="0.5" />
+                  <span class="field-help">Frame absence before alert (default 5.0s)</span>
+                </div>
+              </div>
+            </div>
+
+            <!-- Section: Violation Severities -->
+            <div class="settings-section">
+              <h3 class="section-title">Violation Severities</h3>
+              <div class="setting-grid">
+                <div class="setting-field">
+                  <label for="sev-no_face">No Face</label>
+                  <select id="sev-no_face" class="severity-select">
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </div>
+                <div class="setting-field">
+                  <label for="sev-multiple_faces">Multiple Faces</label>
+                  <select id="sev-multiple_faces" class="severity-select">
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </div>
+                <div class="setting-field">
+                  <label for="sev-head_turned_away">Head Turned Away</label>
+                  <select id="sev-head_turned_away" class="severity-select">
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </div>
+                <div class="setting-field">
+                  <label for="sev-gaze_off_screen">Gaze Off Screen</label>
+                  <select id="sev-gaze_off_screen" class="severity-select">
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </div>
+                <div class="setting-field">
+                  <label for="sev-prohibited_object">Prohibited Object</label>
+                  <select id="sev-prohibited_object" class="severity-select">
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </div>
+                <div class="setting-field">
+                  <label for="sev-identity_mismatch">Identity Mismatch</label>
+                  <select id="sev-identity_mismatch" class="severity-select">
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </div>
+                <div class="setting-field">
+                  <label for="sev-signal_lost">Signal Lost</label>
+                  <select id="sev-signal_lost" class="severity-select">
+                    <option value="low">Low</option>
+                    <option value="medium">Medium</option>
+                    <option value="high">High</option>
+                    <option value="critical">Critical</option>
+                  </select>
+                </div>
+              </div>
+            </div>
+
+            <!-- Developer Options (Collapsible with Toggle Switch) -->
+            <div class="settings-section dev-section">
+              <div class="dev-header">
+                <div class="dev-title-wrap">
+                  <h3 class="section-title">Developer Options</h3>
+                  <span class="dev-badge">ADVANCED</span>
+                </div>
+                <label class="toggle-switch">
+                  <input type="checkbox" id="dev-toggle" />
+                  <span class="toggle-slider"></span>
+                </label>
+              </div>
+              <p class="dev-warning">Internal detection thresholds, NMS cutoffs, and temporal filter alphas. Modifying these may impact model accuracy or latency.</p>
+
+              <div id="dev-panel" class="dev-content" hidden>
+                <div class="dev-subsection-title">Model Confidence &amp; NMS</div>
+                <div class="setting-grid">
+                  <div class="setting-field">
+                    <label for="dev-face-score">Face Min Score</label>
+                    <input type="number" id="dev-face-score" min="0.1" max="1.0" step="0.05" />
+                    <span class="field-help">YuNet confidence threshold</span>
+                  </div>
+                  <div class="setting-field">
+                    <label for="dev-face-nms">Face NMS Threshold</label>
+                    <input type="number" id="dev-face-nms" min="0.1" max="1.0" step="0.05" />
+                    <span class="field-help">YuNet IoU suppression</span>
+                  </div>
+                  <div class="setting-field">
+                    <label for="dev-obj-conf">Object Min Confidence</label>
+                    <input type="number" id="dev-obj-conf" min="0.1" max="1.0" step="0.05" />
+                    <span class="field-help">YOLOX score cutoff</span>
+                  </div>
+                  <div class="setting-field">
+                    <label for="dev-obj-nms">Object NMS Threshold</label>
+                    <input type="number" id="dev-obj-nms" min="0.1" max="1.0" step="0.05" />
+                    <span class="field-help">YOLOX IoU suppression</span>
+                  </div>
+                </div>
+
+                <div class="dev-subsection-title">Temporal Smoothing &amp; Gating</div>
+                <div class="setting-grid">
+                  <div class="setting-field">
+                    <label for="dev-pose-ema">Pose EMA Alpha</label>
+                    <input type="number" id="dev-pose-ema" min="0.01" max="1.0" step="0.05" />
+                    <span class="field-help">Head pose smoothing weight</span>
+                  </div>
+                  <div class="setting-field">
+                    <label for="dev-gaze-ema">Gaze EMA Alpha</label>
+                    <input type="number" id="dev-gaze-ema" min="0.01" max="1.0" step="0.05" />
+                    <span class="field-help">Gaze angle smoothing weight</span>
+                  </div>
+                  <div class="setting-field">
+                    <label for="dev-blink-ear">Blink EAR Floor</label>
+                    <input type="number" id="dev-blink-ear" min="0.05" max="0.5" step="0.01" />
+                    <span class="field-help">Eye Aspect Ratio blink cutoff</span>
+                  </div>
+                  <div class="setting-field">
+                    <label for="dev-gaze-min-face">Gaze Min Face Score</label>
+                    <input type="number" id="dev-gaze-min-face" min="0.1" max="1.0" step="0.05" />
+                    <span class="field-help">Min face score to run gaze</span>
+                  </div>
+                </div>
+
+                <div class="dev-subsection-title">Cadence &amp; Execution (Requires App Restart)</div>
+                <div class="setting-grid">
+                  <div class="setting-field">
+                    <label for="dev-face-hz">Face Worker Cadence (Hz)</label>
+                    <input type="number" id="dev-face-hz" min="1.0" max="60.0" step="1.0" />
+                    <span class="field-help">Face target loop frequency</span>
+                  </div>
+                  <div class="setting-field">
+                    <label for="dev-obj-hz">Object Worker Cadence (Hz)</label>
+                    <input type="number" id="dev-obj-hz" min="0.1" max="30.0" step="0.5" />
+                    <span class="field-help">Object detection loop frequency</span>
+                  </div>
+                  <div class="setting-field">
+                    <label for="dev-identity-hz">Identity Worker Cadence (Hz)</label>
+                    <input type="number" id="dev-identity-hz" min="0.05" max="5.0" step="0.05" />
+                    <span class="field-help">Identity check frequency</span>
+                  </div>
+                  <div class="setting-field">
+                    <label for="dev-intra-threads">ORT Intra-Op Threads</label>
+                    <input type="number" id="dev-intra-threads" min="1" max="32" step="1" />
+                    <span class="field-help">CPU threads for small models</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="settings-footer">
+            <button id="btn-settings-reset" class="btn-secondary">Reset to Defaults</button>
+            <div class="footer-actions">
+              <button id="btn-settings-cancel" class="btn-secondary">Cancel</button>
+              <button id="btn-settings-save" class="btn-primary">Apply &amp; Save</button>
+            </div>
+          </div>
+        </div>
       </div>
     </div>
 

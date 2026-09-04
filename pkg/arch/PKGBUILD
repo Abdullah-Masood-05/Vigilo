@@ -1,6 +1,6 @@
 # Maintainer: Abdullah Masood <abdullah.masood.05@example.com>
 pkgname=vigilo
-pkgver=0.1.0
+pkgver=1.0.0
 pkgrel=1
 pkgdesc="Webcam proctoring for online exams — camera frames in, proctoring signals out"
 arch=('x86_64')

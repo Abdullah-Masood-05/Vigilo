@@ -171,17 +171,24 @@ jobs:
       - name: Publish GPU Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v0.1.0-gpu
-          name: "Vigilo v0.1.0 (GPU DirectML build)"
+          tag_name: v1.0.0-gpu
+          name: "Vigilo v1.0.0 (GPU DirectML build)"
           prerelease: true
           files: |
             downloaded-installers/*
           generate_release_notes: false
           body: |
-            GPU-accelerated pre-release build of Vigilo using DirectML for ONNX Runtime model inference.
+            GPU-accelerated pre-release build of Vigilo v1.0.0 using DirectML for ONNX Runtime model inference.
 
             ### Overview
-            This build moves inference workloads to any DirectX 12 compatible GPU via DirectML, reducing face/pose/gaze pipeline latency from ~27 ms down to ~5.8 ms p50.
+            This build moves inference workloads to any DirectX 12 compatible GPU via DirectML, reducing face/pose/gaze pipeline latency from ~27 ms down to ~5.8 ms p50, while incorporating Vigilo v1.0.0's dynamic threshold configuration, in-app settings drawer, formalized severity tiers, and zero-overhead hot-reloading.
+
+            ### What's New in v1.0.0-gpu
+            - **DirectML GPU Acceleration**: Native hardware acceleration on DirectX 12 GPUs for ultra-low latency inference (~5.8 ms p50).
+            - **Dynamic Threshold Configuration**: Adjust hold timers, angles, and score thresholds in real time without restarting.
+            - **Modern Glassmorphic Settings Drawer**: In-app controls for Presence, Head Pose, Gaze Tracking, Prohibited Objects, Severities, and internal Developer Options.
+            - **Interactive In-App Guide**: Built-in reference explaining all violation rules and severity tiers (Low, Medium, High, Critical).
+            - **Persistent Storage**: Configuration auto-persists to `settings.toml` in OS app data with factory reset support.
 
             ### Installers and DirectML bundling
             - **Windows MSI installer (`.msi`)**: Recommended. Bundles `DirectML.dll` automatically.

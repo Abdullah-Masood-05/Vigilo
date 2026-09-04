@@ -738,6 +738,304 @@ impl ModelSlot {
     }
 }
 
+// ---------------------------------------------------------------------------
+// settings DTOs — the user-facing subset of Config
+// ---------------------------------------------------------------------------
+
+/// The fusion-relevant thresholds a non-developer user sees in the Settings
+/// panel. Deliberately a flat struct of primitives so the frontend can
+/// populate it from form fields without nesting.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct UserThresholds {
+    // -- face --
+    pub no_face_hold_ms: u64,
+    pub no_face_clear_ms: u64,
+    pub never_seen_ms: u64,
+    pub multi_face_hold_ms: u64,
+    pub multi_face_clear_ms: u64,
+
+    // -- head pose --
+    pub pose_yaw_enter_deg: f64,
+    pub pose_yaw_exit_deg: f64,
+    pub pose_pitch_enter_deg: f64,
+    pub pose_pitch_exit_deg: f64,
+    pub pose_hold_ms: u64,
+    pub pose_clear_ms: u64,
+
+    // -- gaze --
+    pub gaze_yaw_enter_deg: f64,
+    pub gaze_yaw_exit_deg: f64,
+    pub gaze_pitch_enter_deg: f64,
+    pub gaze_pitch_exit_deg: f64,
+    pub gaze_pitch_offset_deg: f64,
+    pub gaze_hold_ms: u64,
+    pub gaze_clear_ms: u64,
+
+    // -- objects --
+    pub object_hold_ms: u64,
+    pub object_clear_ms: u64,
+    pub object_enter_score: f64,
+    pub object_clear_score: f64,
+    pub object_score_half_life_ms: u64,
+
+    // -- identity --
+    pub identity_cosine_enter: f64,
+    pub identity_cosine_exit: f64,
+    pub identity_consecutive_failures: u32,
+
+    // -- fusion --
+    pub signal_lost_ms: u64,
+    pub signal_lost_clear_ms: u64,
+
+    // -- severity map (keyed by ViolationKind::as_str) --
+    pub severity: BTreeMap<String, Severity>,
+}
+
+impl Default for UserThresholds {
+    fn default() -> Self {
+        Self::from_config(&Config::default())
+    }
+}
+
+impl UserThresholds {
+    pub fn from_config(cfg: &Config) -> Self {
+        let t = &cfg.thresholds;
+        Self {
+            no_face_hold_ms: t.face.no_face_hold_ms,
+            no_face_clear_ms: t.face.no_face_clear_ms,
+            never_seen_ms: t.face.never_seen_ms,
+            multi_face_hold_ms: t.face.multi_face_hold_ms,
+            multi_face_clear_ms: t.face.multi_face_clear_ms,
+
+            pose_yaw_enter_deg: t.pose.yaw_enter_deg,
+            pose_yaw_exit_deg: t.pose.yaw_exit_deg,
+            pose_pitch_enter_deg: t.pose.pitch_enter_deg,
+            pose_pitch_exit_deg: t.pose.pitch_exit_deg,
+            pose_hold_ms: t.pose.hold_ms,
+            pose_clear_ms: t.pose.clear_ms,
+
+            gaze_yaw_enter_deg: t.gaze.yaw_enter_deg,
+            gaze_yaw_exit_deg: t.gaze.yaw_exit_deg,
+            gaze_pitch_enter_deg: t.gaze.pitch_enter_deg,
+            gaze_pitch_exit_deg: t.gaze.pitch_exit_deg,
+            gaze_pitch_offset_deg: t.gaze.pitch_offset_deg,
+            gaze_hold_ms: t.gaze.hold_ms,
+            gaze_clear_ms: t.gaze.clear_ms,
+
+            object_hold_ms: t.objects.hold_ms,
+            object_clear_ms: t.objects.clear_ms,
+            object_enter_score: t.objects.enter_score,
+            object_clear_score: t.objects.clear_score,
+            object_score_half_life_ms: t.objects.score_half_life_ms,
+
+            identity_cosine_enter: t.identity.cosine_enter,
+            identity_cosine_exit: t.identity.cosine_exit,
+            identity_consecutive_failures: t.identity.consecutive_failures,
+
+            signal_lost_ms: t.fusion.signal_lost_ms,
+            signal_lost_clear_ms: t.fusion.signal_lost_clear_ms,
+            severity: t.fusion.severity.clone(),
+        }
+    }
+
+    /// Merge user values into a full Config, leaving non-user fields untouched.
+    pub fn apply_to(&self, cfg: &mut Config) {
+        let t = &mut cfg.thresholds;
+        t.face.no_face_hold_ms = self.no_face_hold_ms;
+        t.face.no_face_clear_ms = self.no_face_clear_ms;
+        t.face.never_seen_ms = self.never_seen_ms;
+        t.face.multi_face_hold_ms = self.multi_face_hold_ms;
+        t.face.multi_face_clear_ms = self.multi_face_clear_ms;
+
+        t.pose.yaw_enter_deg = self.pose_yaw_enter_deg;
+        t.pose.yaw_exit_deg = self.pose_yaw_exit_deg;
+        t.pose.pitch_enter_deg = self.pose_pitch_enter_deg;
+        t.pose.pitch_exit_deg = self.pose_pitch_exit_deg;
+        t.pose.hold_ms = self.pose_hold_ms;
+        t.pose.clear_ms = self.pose_clear_ms;
+
+        t.gaze.yaw_enter_deg = self.gaze_yaw_enter_deg;
+        t.gaze.yaw_exit_deg = self.gaze_yaw_exit_deg;
+        t.gaze.pitch_enter_deg = self.gaze_pitch_enter_deg;
+        t.gaze.pitch_exit_deg = self.gaze_pitch_exit_deg;
+        t.gaze.pitch_offset_deg = self.gaze_pitch_offset_deg;
+        t.gaze.hold_ms = self.gaze_hold_ms;
+        t.gaze.clear_ms = self.gaze_clear_ms;
+
+        t.objects.hold_ms = self.object_hold_ms;
+        t.objects.clear_ms = self.object_clear_ms;
+        t.objects.enter_score = self.object_enter_score;
+        t.objects.clear_score = self.object_clear_score;
+        t.objects.score_half_life_ms = self.object_score_half_life_ms;
+
+        t.identity.cosine_enter = self.identity_cosine_enter;
+        t.identity.cosine_exit = self.identity_cosine_exit;
+        t.identity.consecutive_failures = self.identity_consecutive_failures;
+
+        t.fusion.signal_lost_ms = self.signal_lost_ms;
+        t.fusion.signal_lost_clear_ms = self.signal_lost_clear_ms;
+        t.fusion.severity = self.severity.clone();
+    }
+}
+
+/// Advanced internals hidden behind "Developer Options" in the UI.
+/// Changing these can affect performance and should be done with care.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(default)]
+pub struct DevThresholds {
+    // -- face internals --
+    pub face_min_score: f64,
+    pub face_nms_threshold: f64,
+    pub face_top_k: usize,
+    pub face_multi_face_count: usize,
+
+    // -- pose internals --
+    pub pose_ema_alpha: f64,
+    pub pose_crop_expand: f64,
+
+    // -- gaze internals --
+    pub gaze_calibration_ms: u64,
+    pub gaze_calibration_min_samples: usize,
+    pub gaze_calibration_variance_ceiling: f64,
+    pub gaze_variance_widening: f64,
+    pub gaze_blink_ear_floor: f64,
+    pub gaze_ema_alpha: f64,
+    pub gaze_min_face_score: f64,
+
+    // -- object internals --
+    pub object_min_score: f64,
+    pub object_nms_threshold: f64,
+
+    // -- cadence --
+    pub cadence_face_hz: f64,
+    pub cadence_object_hz: f64,
+    pub cadence_identity_hz: f64,
+
+    // -- runtime --
+    pub runtime_intra_threads_small: usize,
+    pub runtime_intra_threads_large: usize,
+    pub runtime_inter_threads: usize,
+    pub runtime_warmup_iters: u32,
+    pub runtime_allow_spinning: bool,
+    pub runtime_evidence_per_minute: u32,
+
+    // -- debug direction --
+    pub direction_enter_deg: f64,
+    pub direction_exit_deg: f64,
+}
+
+impl Default for DevThresholds {
+    fn default() -> Self {
+        Self::from_config(&Config::default())
+    }
+}
+
+impl DevThresholds {
+    pub fn from_config(cfg: &Config) -> Self {
+        let t = &cfg.thresholds;
+        Self {
+            face_min_score: t.face.min_score,
+            face_nms_threshold: t.face.nms_threshold,
+            face_top_k: t.face.top_k,
+            face_multi_face_count: t.face.multi_face_count,
+
+            pose_ema_alpha: t.pose.ema_alpha,
+            pose_crop_expand: t.pose.crop_expand,
+
+            gaze_calibration_ms: t.gaze.calibration_ms,
+            gaze_calibration_min_samples: t.gaze.calibration_min_samples,
+            gaze_calibration_variance_ceiling: t.gaze.calibration_variance_ceiling,
+            gaze_variance_widening: t.gaze.variance_widening,
+            gaze_blink_ear_floor: t.gaze.blink_ear_floor,
+            gaze_ema_alpha: t.gaze.ema_alpha,
+            gaze_min_face_score: t.gaze.min_face_score,
+
+            object_min_score: t.objects.min_score,
+            object_nms_threshold: t.objects.nms_threshold,
+
+            cadence_face_hz: cfg.cadence.face_hz,
+            cadence_object_hz: cfg.cadence.object_hz,
+            cadence_identity_hz: cfg.cadence.identity_hz,
+
+            runtime_intra_threads_small: cfg.runtime.intra_threads_small,
+            runtime_intra_threads_large: cfg.runtime.intra_threads_large,
+            runtime_inter_threads: cfg.runtime.inter_threads,
+            runtime_warmup_iters: cfg.runtime.warmup_iters,
+            runtime_allow_spinning: cfg.runtime.allow_spinning,
+            runtime_evidence_per_minute: cfg.runtime.evidence_per_minute,
+
+            direction_enter_deg: t.debug_direction.enter_deg,
+            direction_exit_deg: t.debug_direction.exit_deg,
+        }
+    }
+
+    /// Merge developer values into a full Config.
+    ///
+    /// **NOTE**: cadence and runtime fields are informational only in this
+    /// implementation. They are persisted and shown, but changing them at
+    /// runtime has no effect because ORT sessions and worker cadences are
+    /// set at startup. A restart is needed for those to take effect.
+    pub fn apply_to(&self, cfg: &mut Config) {
+        let t = &mut cfg.thresholds;
+        t.face.min_score = self.face_min_score;
+        t.face.nms_threshold = self.face_nms_threshold;
+        t.face.top_k = self.face_top_k;
+        t.face.multi_face_count = self.face_multi_face_count;
+
+        t.pose.ema_alpha = self.pose_ema_alpha;
+        t.pose.crop_expand = self.pose_crop_expand;
+
+        t.gaze.calibration_ms = self.gaze_calibration_ms;
+        t.gaze.calibration_min_samples = self.gaze_calibration_min_samples;
+        t.gaze.calibration_variance_ceiling = self.gaze_calibration_variance_ceiling;
+        t.gaze.variance_widening = self.gaze_variance_widening;
+        t.gaze.blink_ear_floor = self.gaze_blink_ear_floor;
+        t.gaze.ema_alpha = self.gaze_ema_alpha;
+        t.gaze.min_face_score = self.gaze_min_face_score;
+
+        t.objects.min_score = self.object_min_score;
+        t.objects.nms_threshold = self.object_nms_threshold;
+
+        cfg.cadence.face_hz = self.cadence_face_hz;
+        cfg.cadence.object_hz = self.cadence_object_hz;
+        cfg.cadence.identity_hz = self.cadence_identity_hz;
+
+        cfg.runtime.intra_threads_small = self.runtime_intra_threads_small;
+        cfg.runtime.intra_threads_large = self.runtime_intra_threads_large;
+        cfg.runtime.inter_threads = self.runtime_inter_threads;
+        cfg.runtime.warmup_iters = self.runtime_warmup_iters;
+        cfg.runtime.allow_spinning = self.runtime_allow_spinning;
+        cfg.runtime.evidence_per_minute = self.runtime_evidence_per_minute;
+
+        t.debug_direction.enter_deg = self.direction_enter_deg;
+        t.debug_direction.exit_deg = self.direction_exit_deg;
+    }
+}
+
+/// The complete settings payload sent between frontend and backend.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SettingsPayload {
+    pub user: UserThresholds,
+    pub dev: DevThresholds,
+}
+
+impl SettingsPayload {
+    pub fn from_config(cfg: &Config) -> Self {
+        Self {
+            user: UserThresholds::from_config(cfg),
+            dev: DevThresholds::from_config(cfg),
+        }
+    }
+
+    /// Apply both user and dev settings to a Config, then validate.
+    pub fn apply_to(&self, cfg: &mut Config) -> Result<()> {
+        self.user.apply_to(cfg);
+        self.dev.apply_to(cfg);
+        cfg.validate()
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
