@@ -147,23 +147,101 @@ deal with for downstream users.
 
 ## What it detects
 
-| Violation | Fires when |
-|---|---|
-| `NeverSeen` | no face at all in the first 10 s |
-| `NoFace` | face absent for 2.5 s |
-| `MultipleFaces` | two or more faces for 2 s |
-| `HeadTurnedAway` | smoothed head yaw > 30° or pitch > 25° |
-| `GazeOffScreen` | smoothed gaze > 25° off centre |
-| `ProhibitedObject` | accumulated evidence for a phone crosses a threshold |
-| `IdentityMismatch` | three consecutive checks below the similarity floor |
-| `SignalLost` | pose or gaze unavailable for 5 s — a covered camera must not read as "all clear" |
+## What it detects
 
-Every number above lives in `Config` and nowhere else. Dump the full set with
-`detect-cli config --out dev.toml`.
+| Violation | Default Trigger | Default Severity | Meaning |
+|---|---|---|---|
+| `NeverSeen` | No face at all in first 10 s | `high` | Candidate failed to position themselves before session started |
+| `NoFace` | Face absent continuously for 2.5 s | `high` | Candidate left the camera frame or ducked out of view |
+| `MultipleFaces` | 2+ faces present continuously for 2.0 s | `critical` | Unauthorized person entered frame / assisted candidate |
+| `HeadTurnedAway` | Head yaw > 30° or pitch > 25° for 1.5 s | `medium` | Looking away toward secondary monitor, notes, or assistant |
+| `GazeOffScreen` | Eye gaze > 25° horizontal / 20° vertical for 1.2 s | `low` | Eye wandering away from display boundaries |
+| `ProhibitedObject` | Phone confidence > 0.40 for 1.0 s | `high` | Unauthorized mobile phone or handheld screen visible |
+| `IdentityMismatch` | 3 consecutive checks with cosine sim < 0.40 | `critical` | Person in chair does not match enrolled reference candidate |
+| `SignalLost` | Pose or gaze lost for 5.0 s | `critical` | Camera covered, blocked, or feed frozen (never reads as "clear") |
+
+Every threshold, timer, and severity above is dynamically configurable via the in-app **Settings** panel (or persistent `settings.toml`), and hot-reloads instantly without interrupting camera capture.
 
 **Identity needs enrolment.** Click **Enrol face** once, looking at the camera,
 before anything else. Until then the identity slot reports `NotConfigured` and
 no mismatch can fire — an unenrolled session is not a verified one.
+
+## Configuration & Settings Guide
+
+Vigilo provides a slide-out **Threshold Settings** UI (and a persistent `settings.toml` configuration file) allowing test administrators and proctors to tailor sensitivity to their testing environment.
+
+### 1. Severity Levels Explained
+
+Every violation is classified under one of four severity tiers. Setting appropriate severities determines how proctoring review workflows triage and act on infractions:
+
+| Severity | Color Code | Proctoring Meaning & Action | Typical Use Cases |
+|---|---|---|---|
+| **Low** | Blue (`#58a6ff`) | **Informational Anomaly.** Brief posture shift or momentary eye glance. Logged to the timeline for post-exam informational review; does **not** deduct points, flag high-risk warnings, or interrupt the candidate. | `GazeOffScreen` (brief glances, thinking glances) |
+| **Medium** | Amber (`#d29922`) | **Suspicious Behavior / Warning.** Sustained pattern of looking off-target, reading off-screen cheat notes, or facing a secondary monitor. Increments cumulative exam risk score and triggers real-time visual warning. | `HeadTurnedAway` (consistent head turning) |
+| **High** | Orange (`#f0883e`) | **Significant Misconduct Indicator.** Strong indicator of unauthorized activity or physical absence. Alerts proctor immediately for prioritized real-time video verification. | `NoFace` (candidate left chair), `ProhibitedObject` (smartphone visible) |
+| **Critical** | Crimson (`#f85149`) | **Severe Integrity Breach.** Irrefutable or severe compromise of examination integrity. Triggers immediate urgent alarm and provides grounds for instant test pausing, locking, or disqualification. | `MultipleFaces` (second person present), `IdentityMismatch` (impersonation / proxy test taker), `SignalLost` (covered lens / feed tampering) |
+
+---
+
+### 2. User-Configurable Detection Rules
+
+These parameters can be tuned directly from the top section of the in-app **Settings** drawer:
+
+#### A. Presence & Identity
+* **No-face hold time (s)** *(Default: 2.5s)*: How many continuous seconds no face can be detected before raising `NoFace`. A buffer of 2.0–3.0s prevents false positives when a candidate sneezes or bends momentarily.
+* **Multi-face hold time (s)** *(Default: 2.0s)*: Continuous seconds that multiple faces must remain in frame before triggering `MultipleFaces`. Absorbs brief background passers-by in non-secure rooms.
+* **Identity similarity floor (0–1)** *(Default: 0.40)*: ArcFace cosine similarity threshold between the enrolled face embedding and periodic live checks. Embeddings have unit norm ($L_2 = 1.0$), so similarity spans $[-1.0, 1.0]$. Values $\ge 0.40$ represent the same individual with high confidence; scores below indicate an imposter.
+* **Identity consecutive failures** *(Default: 3)*: Number of consecutive failed identity checks required before firing `IdentityMismatch`. At the 0.2 Hz identity check interval, 3 failures ensure 15 seconds of confirmed mismatch, eliminating lighting flicker false alarms.
+
+#### B. Head Pose
+* **Head yaw threshold (deg)** *(Default: 30°)*: Maximum allowable horizontal head turn (left/right) away from the webcam.
+* **Head pitch threshold (deg)** *(Default: 25°)*: Maximum allowable vertical head tilt (up/down).
+* **Head turned hold time (s)** *(Default: 1.5s)*: Seconds the head orientation must continuously exceed either yaw or pitch limits before triggering `HeadTurnedAway`.
+* *Hysteresis note*: To prevent edge-chatter (rapid firing on/off when hovering near 30°), the pipeline automatically enforces exit bounds: $yaw_{exit} = \max(5.0^\circ, yaw_{enter} - 7.0^\circ)$ and $pitch_{exit} = \max(5.0^\circ, pitch_{enter} - 5.0^\circ)$.
+
+#### C. Gaze Tracking
+* **Gaze yaw threshold (deg)** *(Default: 25°)*: Maximum horizontal eye gaze angle off screen center.
+* **Gaze pitch threshold (deg)** *(Default: 20°)*: Maximum vertical eye gaze angle off screen center.
+* **Gaze off-screen hold time (s)** *(Default: 1.2s)*: Continuous duration looking outside screen bounds before firing `GazeOffScreen`. Tuned to absorb normal physiological blinks and momentary micro-saccades.
+
+#### D. Objects & Hardware Health
+* **Phone score threshold (0–1)** *(Default: 0.40)*: YOLOX-Nano confidence floor for mobile phone bounding box detections.
+* **Phone hold time (s)** *(Default: 1.0s)*: Seconds of continuous/accumulated visual evidence required before raising `ProhibitedObject`.
+* **Signal lost hold time (s)** *(Default: 5.0s)*: Timeout duration when face, pose, or gaze signals are completely missing from the capture pipeline. **Critical security safeguard**: if a candidate covers their camera with tape or disconnects the sensor, Vigilo will never report "all clear" — it raises `SignalLost`.
+
+---
+
+### 3. Developer Options (Internal Tunables)
+
+Clicking **"Show internal tunables"** reveals low-level model and engine parameters:
+
+| Category | Tunable Parameter | Default | Purpose & Impact |
+|---|---|---|---|
+| **YuNet Face Detector** | `yunet_score_thresh` | `0.60` | Minimum confidence score to accept a detected face candidate. |
+| | `yunet_nms_thresh` | `0.30` | Non-Maximum Suppression IoU threshold to deduplicate overlapping face boxes. |
+| | `face_crop_margin` | `0.20` | Fractional margin added around the face bounding box before feeding to pose/identity nets. |
+| **Smoothing & Filtering** | `pose_ema_alpha` | `0.35` | Exponential Moving Average smoothing factor for head pose angles ($0 < \alpha \le 1.0$). Lower values provide smoother tracking; higher values give faster response. |
+| | `gaze_ema_alpha` | `0.35` | EMA smoothing factor for gaze angles. |
+| | `blink_ear_cutoff` | `0.18` | Eye Aspect Ratio (EAR) threshold below which an eye is classified as closed (blinking). Blinking frames are ignored in gaze fusion so blinks don't distort gaze angles. |
+| **Worker Cadence** | `face_target_fps` | `15.0 Hz` | Target execution rate for face detection, head pose, and gaze tracking worker. |
+| | `object_target_fps` | `1.0 Hz` | Target rate for YOLOX-Nano object detection (keeps CPU consumption low). |
+| | `identity_interval_sec` | `5.0 s` | Interval between ArcFace identity verification checks (0.2 Hz). |
+| **ORT Execution** | `ort_intra_threads` | `1` | Number of parallel intra-op compute threads per ONNX Runtime session. Set to 1 to minimize CPU core thrashing across concurrent workers. |
+
+---
+
+### 4. Persistence & Zero-Overhead Hot-Reloading
+
+1. **Storage Location**: Settings are automatically saved to `settings.toml` in your operating system's standard application data folder:
+   - **Windows**: `%APPDATA%\com.deepscreen.viewer\settings.toml`
+   - **macOS**: `~/Library/Application Support/com.deepscreen.viewer/settings.toml`
+   - **Linux**: `~/.config/com.deepscreen.viewer/settings.toml`
+2. **Instant Zero-Cost Updates**:
+   - The engine maintains configuration in an atomic `ArcSwap<Config>` pointer.
+   - Worker loops check `Arc::ptr_eq` each cycle without acquiring mutex locks.
+   - Updating settings in the UI persists to disk and hot-reloads the active detection engine instantaneously without dropped camera frames, video lag, or process restarts.
+   - The **"Reset to Defaults"** button instantly restores baseline factory values and removes custom overrides.
+
 
 ## Architecture
 
