@@ -78,7 +78,7 @@ struct SnapshotDto {
     enrolled: bool,
     /// Show `error` as a full-screen setup instruction, not an error banner.
     setup_blocked: bool,
-    /// `slot -> "DirectML" | "CPU"`, as actually obtained.
+    /// `slot -> "DirectML" | "CUDA" | "CoreML" | "CPU"`, as actually obtained.
     execution_providers: Vec<(String, String)>,
 }
 

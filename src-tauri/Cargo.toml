@@ -64,35 +64,15 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # Inference. Pinned to one version so the app and detect-cli cannot disagree
-# about the ONNX Runtime binary. DirectML is deliberately NOT enabled.
+# about the ONNX Runtime binary.
 #
-# `copy-dylibs` is dropped from the default feature set on purpose. ONNX
-# Runtime is statically linked here — there is no `onnxruntime.dll` beside the
-# exe — so the only thing that feature was copying into the output directory
-# was `DirectML.dll`, 17.7 MB of GPU backend for an execution provider we do
-# not enable. Tauri's bundler sweeps that directory, so the DLL was being
-# installed on every tester's machine to sit unused.
-# `directml` is in the prebuilt binaries — no source build needed. Guides that
-# say otherwise are describing ort 1.x. Enabling it re-adds DirectML.dll
-# (~17.7 MB) to the output directory and therefore to the installer, which is
-# the price of GPU inference and is accepted deliberately.
+# No GPU execution provider is enabled here. Each one is a Cargo feature below
+# (`gpu-directml`, `gpu-cuda`, `gpu-coreml`), picked per platform at build time
+# — CI passes the right one for each OS. A plain `cargo build` is the CPU build.
 #
-# `copy-dylibs` has to come back with it: ONNX Runtime itself is still
-# statically linked, but DirectML.dll is a real dynamic dependency and the app
-# will not start without it beside the exe.
-[target.'cfg(windows)'.dependencies]
-ort = { version = "2.0.0-rc.12", default-features = false, features = [
-    "std",
-    "ndarray",
-    "tracing",
-    "download-binaries",
-    "tls-native",
-    "api-24",
-    "directml",
-    "copy-dylibs",
-] }
-
-[target.'cfg(not(windows))'.dependencies]
+# `copy-dylibs` is likewise not on by default. ONNX Runtime is statically
+# linked, so on a CPU build there is nothing for it to copy; the GPU features
+# that do have a real dynamic dependency turn it back on themselves.
 ort = { version = "2.0.0-rc.12", default-features = false, features = [
     "std",
     "ndarray",
@@ -101,7 +81,6 @@ ort = { version = "2.0.0-rc.12", default-features = false, features = [
     "tls-native",
     "api-24",
 ] }
-
 ndarray = "0.17"
 
 [dev-dependencies]
@@ -112,6 +91,28 @@ default = []
 # Builds the `detect-cli` development harness. Off by default so it stays out
 # of the installer — see the `[[bin]]` section above.
 cli = []
+
+# GPU execution providers, one per platform. Each is only ever registered on
+# the OS it exists for (see `models::gpu_eps`), so a feature switched on for
+# the wrong target is inert rather than fatal — registering DirectML on Linux
+# was a SIGSEGV (9fc8956). A session that cannot get its GPU provider falls
+# back to CPU with a warning, never an error.
+#
+#     cargo tauri build --features gpu-directml   # Windows
+#     cargo tauri build --features gpu-coreml     # macOS
+#     cargo tauri build --features gpu-cuda       # Linux (NVIDIA)
+#
+# DirectML: any DirectX 12 GPU. `DirectML.dll` (~17.7 MB) is a real dynamic
+# dependency, so `copy-dylibs` puts it beside the exe for the bundler.
+gpu-directml = ["ort/directml", "ort/copy-dylibs"]
+# CUDA: NVIDIA only, and the machine needs the CUDA 12 runtime and cuDNN 9
+# installed — ORT's CUDA provider is loaded at run time, so without them the
+# session falls back to CPU. `copy-dylibs` brings
+# `libonnxruntime_providers_{shared,cuda}.so` beside the binary, which is
+# where ORT looks for them.
+gpu-cuda = ["ort/cuda", "ort/copy-dylibs"]
+# CoreML: Apple Silicon. Linked statically along with ORT, nothing to ship.
+gpu-coreml = ["ort/coreml"]
 
 # Shipping profile. `strip` and `lto` together are worth several MB in a binary
 # this size and cost nothing at run time.

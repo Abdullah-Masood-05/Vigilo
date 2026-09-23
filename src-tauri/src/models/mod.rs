@@ -63,8 +63,8 @@ pub struct TensorSpec {
 }
 
 impl TensorSpec {
-    /// Whether every axis is fixed. DirectML wants fully static shapes at
-    /// session creation, so this is worth knowing before step 5.
+    /// Whether every axis is fixed. The GPU providers want fully static
+    /// shapes at session creation, so this is worth knowing before step 5.
     pub fn is_static(&self) -> bool {
         !self.shape.is_empty() && self.shape.iter().all(|d| *d > 0)
     }
@@ -154,6 +154,8 @@ pub enum ActiveEp {
     #[default]
     Cpu,
     DirectMl,
+    Cuda,
+    CoreMl,
 }
 
 impl ActiveEp {
@@ -161,13 +163,41 @@ impl ActiveEp {
         match self {
             ActiveEp::Cpu => "CPU",
             ActiveEp::DirectMl => "DirectML",
+            ActiveEp::Cuda => "CUDA",
+            ActiveEp::CoreMl => "CoreML",
         }
     }
 }
 
+/// The GPU execution providers this binary was built with, in the order they
+/// are tried. Empty on a CPU build.
+///
+/// Chosen by Cargo feature (`gpu-directml`, `gpu-cuda`, `gpu-coreml`) and
+/// gated on the OS each provider exists for. The gate is not tidiness: the
+/// prebuilt ONNX Runtime for Linux has no DirectML in it, and registering
+/// DirectML there anyway was a SIGSEGV, not an error (9fc8956). A feature
+/// switched on for the wrong target therefore does nothing at all.
+///
+/// CUDA goes ahead of DirectML when a Windows build has both: on an NVIDIA
+/// card it is the faster of the two, and DirectML still catches every other
+/// DX12 device.
+pub fn gpu_eps() -> Vec<ActiveEp> {
+    let mut eps = Vec::new();
+    if cfg!(all(feature = "gpu-cuda", any(target_os = "linux", windows))) {
+        eps.push(ActiveEp::Cuda);
+    }
+    if cfg!(all(feature = "gpu-directml", windows)) {
+        eps.push(ActiveEp::DirectMl);
+    }
+    if cfg!(all(feature = "gpu-coreml", target_os = "macos")) {
+        eps.push(ActiveEp::CoreMl);
+    }
+    eps
+}
+
 /// Free-dimension overrides needed to give a model a fully static shape.
 ///
-/// DirectML wants every shape known at session creation. Four of the five
+/// The GPU providers want every shape known at session creation. Four of the five
 /// models are already static; ArcFace ships with a dynamic batch axis, and
 /// rather than re-exporting the weights the axis is pinned here by name at
 /// load time. Same result, no modified model file to keep in sync.
@@ -191,32 +221,37 @@ pub fn build_session_for(
     dims: DimOverrides<'_>,
 ) -> Result<(Session, ActiveEp)> {
     let path = path.as_ref();
-    let want_dml = matches!(rt.providers.for_slot(slot), ExecutionProviderPref::DirectMlThenCpu);
+    let gpu = match rt.providers.for_slot(slot) {
+        ExecutionProviderPref::GpuThenCpu => gpu_eps(),
+        ExecutionProviderPref::CpuOnly => Vec::new(),
+    };
 
-    if want_dml {
-        match try_build(path, rt, large, true, dims) {
+    for ep in gpu {
+        match try_build(path, rt, large, ep, dims) {
             Ok(session) => {
                 tracing::info!(
                     model = %path.display(),
                     slot = slot.as_str(),
-                    ep = "DirectML",
+                    ep = ep.as_str(),
                     "session created"
                 );
-                return Ok((session, ActiveEp::DirectMl));
+                return Ok((session, ep));
             }
             // Deliberately not fatal, and deliberately loud. A machine without
-            // a DX12 device is a supported machine; one that silently ran on
+            // a usable GPU is a supported machine; one that silently ran on
             // the CPU while the log claimed otherwise is not.
             Err(e) => tracing::warn!(
                 model = %path.display(),
                 slot = slot.as_str(),
+                ep = ep.as_str(),
                 error = %e,
-                "DirectML unavailable for this session; falling back to CPU"
+                "GPU execution provider unavailable for this session; falling back"
             ),
         }
     }
 
-    let session = try_build(path, rt, large, false, dims).map_err(|e| model_load(path, e))?;
+    let session =
+        try_build(path, rt, large, ActiveEp::Cpu, dims).map_err(|e| model_load(path, e))?;
     tracing::info!(
         model = %path.display(),
         slot = slot.as_str(),
@@ -230,7 +265,7 @@ fn try_build(
     path: &Path,
     rt: &RuntimeConfig,
     large: bool,
-    dml: bool,
+    provider: ActiveEp,
     dims: DimOverrides<'_>,
 ) -> std::result::Result<Session, ort::Error> {
     let intra = if large { rt.intra_threads_large } else { rt.intra_threads_small };
@@ -255,26 +290,38 @@ fn try_build(
         .with_intra_op_spinning(rt.allow_spinning)?
         .with_inter_op_spinning(rt.allow_spinning)?;
 
-    // Pin any dynamic axis before the EP sees the graph. DirectML partitions
-    // at session creation, so a dimension left free here is a subgraph that
-    // silently stays on the CPU.
+    // Pin any dynamic axis before the EP sees the graph. The GPU providers
+    // partition at session creation, so a dimension left free here is a
+    // subgraph that silently stays on the CPU.
     for (name, size) in dims {
         builder = builder.with_dimension_override(*name, *size)?;
     }
 
-    if dml {
-        builder = builder
-            // Both are mandatory for DirectML, not tuning knobs: the EP does
-            // not support parallel execution, and its memory-pattern planner
-            // conflicts with ORT's. Leaving either at its default produces
-            // either an outright failure or quietly wrong behaviour.
-            .with_parallel_execution(false)?
-            .with_memory_pattern(false)?
-            // `error_on_failure` is what turns ORT's silent CPU fallback into
-            // something this function can see and report. Without it the
-            // session would build "successfully" on the CPU and every layer
-            // above would believe DirectML was running.
-            .with_execution_providers([ep::DirectML::default().build().error_on_failure()])?;
+    // `error_on_failure` on every provider below is what turns ORT's silent
+    // CPU fallback into something `build_session_for` can see and report.
+    // Without it the session would build "successfully" on the CPU and every
+    // layer above would believe the GPU was running.
+    match provider {
+        ActiveEp::Cpu => {}
+        ActiveEp::DirectMl => {
+            builder = builder
+                // Both are mandatory for DirectML, not tuning knobs: the EP
+                // does not support parallel execution, and its memory-pattern
+                // planner conflicts with ORT's. Leaving either at its default
+                // produces either an outright failure or quietly wrong
+                // behaviour.
+                .with_parallel_execution(false)?
+                .with_memory_pattern(false)?
+                .with_execution_providers([ep::DirectML::default().build().error_on_failure()])?;
+        }
+        ActiveEp::Cuda => {
+            builder = builder
+                .with_execution_providers([ep::CUDA::default().build().error_on_failure()])?;
+        }
+        ActiveEp::CoreMl => {
+            builder = builder
+                .with_execution_providers([ep::CoreML::default().build().error_on_failure()])?;
+        }
     }
 
     // `enable_cpu_mem_arena` is left ON deliberately: disabling it saves
@@ -291,7 +338,7 @@ pub struct BenchResult {
     pub latency: crate::report::LatencySummary,
     pub input_shapes: Vec<Vec<i64>>,
     /// Which EP this measurement was actually taken on. Without it a bench
-    /// table comparing CPU and DirectML could silently be two CPU columns.
+    /// table comparing CPU and GPU could silently be two CPU columns.
     pub ep: ActiveEp,
 }
 
@@ -477,9 +524,24 @@ mod tests {
     }
 
     #[test]
+    fn gpu_providers_are_only_offered_where_they_exist() {
+        // Registering DirectML on Linux was a SIGSEGV, not an error, so the
+        // feature gate is the only thing standing between a mis-built binary
+        // and a crash at model load.
+        for ep in gpu_eps() {
+            match ep {
+                ActiveEp::DirectMl => assert!(cfg!(windows)),
+                ActiveEp::CoreMl => assert!(cfg!(target_os = "macos")),
+                ActiveEp::Cuda => assert!(cfg!(any(target_os = "linux", windows))),
+                ActiveEp::Cpu => panic!("CPU is the fallback, not a GPU provider"),
+            }
+        }
+    }
+
+    #[test]
     fn a_rankless_tensor_is_not_static() {
         // An empty shape means ORT told us nothing useful; treating that as
-        // "static" would let it silently reach DirectML at step 5.
+        // "static" would let it silently reach a GPU provider at step 5.
         let spec = TensorSpec {
             name: "x".into(),
             dtype: "Float32".into(),

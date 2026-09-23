@@ -27,7 +27,7 @@
 //! | 2 | Camera capture behind `FrameSource` | **done** |
 //! | 3 | YuNet face detection + baseline bench | **done** |
 //! | 4 | Threading skeleton, `ArcSwap` frame bus, `Detector` | **done** |
-//! | 5 | DirectML | not started |
+//! | 5 | GPU execution providers (DirectML / CUDA / CoreML) | **done** — DirectML measured, CUDA and CoreML wired |
 //! | 6 | Pose + gaze | **done** |
 //! | 7 | Objects (YOLOX-Nano) on its own worker | **done** |
 //! | 8 | Fusion, record/replay tuning | not started |

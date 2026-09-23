@@ -657,10 +657,15 @@ impl Default for RuntimeConfig {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum ExecutionProviderPref {
-    /// DirectML first, CPU fallback. Runs on any DirectX 12 device, which
-    /// includes the Intel/AMD integrated graphics an exam candidate actually
-    /// has (MODELS.md §5.2).
-    DirectMlThenCpu,
+    /// This build's GPU provider first, CPU fallback: DirectML, CUDA or
+    /// CoreML, whichever `gpu-*` feature the binary was built with. On a
+    /// build with none, this is simply CPU.
+    ///
+    /// `direct_ml_then_cpu` is still accepted — it was this variant's name
+    /// when DirectML was the only GPU provider, and existing config files
+    /// say it.
+    #[serde(alias = "direct_ml_then_cpu")]
+    GpuThenCpu,
     #[default]
     CpuOnly,
 }
@@ -669,7 +674,9 @@ pub enum ExecutionProviderPref {
 ///
 /// Defaults are **measured, not assumed** — see `rust_context.md` §20 for the
 /// per-model CPU-vs-DirectML numbers these came from. A slot defaulting to
-/// `CpuOnly` is a slot where the GPU lost.
+/// `CpuOnly` is a slot where the GPU lost. CUDA and CoreML inherit the same
+/// defaults unmeasured; `bench-cpu.toml` and the bench `EP` column are how to
+/// check them on real hardware.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelProviders {
@@ -690,14 +697,14 @@ impl Default for ModelProviders {
         // gaze 6.4x, ArcFace 10.8x, YOLOX 4.9x. See rust_context.md §20.
         //
         // Safe as a default because the fallback is real and tested: a machine
-        // with no DirectX 12 device logs one warning per session and runs on
-        // the CPU exactly as before.
+        // whose GPU provider will not start logs one warning per session and
+        // runs on the CPU exactly as before, and a CPU-only build never asks.
         Self {
-            face: DirectMlThenCpu,
-            pose: DirectMlThenCpu,
-            gaze: DirectMlThenCpu,
-            objects: DirectMlThenCpu,
-            identity: DirectMlThenCpu,
+            face: GpuThenCpu,
+            pose: GpuThenCpu,
+            gaze: GpuThenCpu,
+            objects: GpuThenCpu,
+            identity: GpuThenCpu,
         }
     }
 }
@@ -1062,6 +1069,19 @@ mod tests {
         assert_eq!(cfg.thresholds.pose.yaw_enter_deg, 35.0);
         assert_eq!(cfg.thresholds.pose.yaw_exit_deg, 22.0);
         assert_eq!(cfg.capture.width, 1280);
+    }
+
+    #[test]
+    fn the_old_directml_provider_name_still_parses() {
+        // `GpuThenCpu` was `DirectMlThenCpu` while DirectML was the only GPU
+        // provider, and config files written then must keep loading.
+        let cfg: Config = toml::from_str(
+            "[runtime.providers]\nface = \"direct_ml_then_cpu\"\npose = \"cpu_only\"\n",
+        )
+        .unwrap();
+        assert_eq!(cfg.runtime.providers.face, ExecutionProviderPref::GpuThenCpu);
+        assert_eq!(cfg.runtime.providers.pose, ExecutionProviderPref::CpuOnly);
+        assert_eq!(cfg.runtime.providers.gaze, ExecutionProviderPref::GpuThenCpu);
     }
 
     #[test]

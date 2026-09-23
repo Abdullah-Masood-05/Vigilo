@@ -62,7 +62,7 @@ pub struct SignalStatus {
     /// Fraction of the session this signal was producing values.
     pub active_fraction: f32,
     pub frames_processed: u64,
-    /// Which EP this model actually ran on. A silent DirectML fallback looks
+    /// Which EP this model actually ran on. A silent GPU fallback looks
     /// exactly like "the GPU didn't help" unless this is surfaced
     /// (MODELS.md §5.2).
     pub execution_provider: String,

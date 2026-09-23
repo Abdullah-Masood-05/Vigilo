@@ -52,10 +52,10 @@ const OUTPUT_NAME: &str = "516";
 /// Pin the one dynamic axis in the whole model set.
 ///
 /// This is the only model of the five that does not ship fully static:
-/// `input.1` is `[?, 3, 112, 112]`. DirectML wants every shape known when the
-/// session is created, and an axis left free means the EP quietly leaves that
-/// subgraph on the CPU — which reads as "DirectML didn't help" rather than as
-/// "DirectML never ran here".
+/// `input.1` is `[?, 3, 112, 112]`. The GPU providers want every shape known
+/// when the session is created, and an axis left free means the EP quietly
+/// leaves that subgraph on the CPU — which reads as "the GPU didn't help"
+/// rather than as "the GPU never ran here".
 ///
 /// The axis is literally named `None`, which is what PyTorch's ONNX exporter
 /// writes for an unnamed batch dimension. That is confirmed from
@@ -81,7 +81,7 @@ impl ArcFace {
     /// Which execution provider this session is actually running on.
     ///
     /// Read from the session that was built, not from what config asked
-    /// for — those differ whenever DirectML registration failed and the
+    /// for — those differ whenever GPU provider registration failed and the
     /// CPU fallback took over.
     pub fn ep(&self) -> ActiveEp {
         self.ep

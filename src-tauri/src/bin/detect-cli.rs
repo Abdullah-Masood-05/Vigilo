@@ -163,7 +163,7 @@ fn main() {
 }
 
 /// Subscribe to `tracing` from the start. `ort` logs EP selection failures
-/// through it, and a silent DirectML fallback otherwise looks exactly like
+/// through it, and a silent GPU fallback otherwise looks exactly like
 /// "the GPU didn't help" when it never engaged (MODELS.md §5.2).
 fn init_tracing(verbose: bool) {
     // ORT logs every graph transform and arena reservation at INFO, which
@@ -776,7 +776,8 @@ fn bench_models(
     let mut out = String::from("# detect-cli bench --all\n\n");
     out.push_str(&format!(
         "Synthetic zero-tensor forward passes, {iters} iterations after {} warm-up. \
-         CPU execution provider. No preprocessing, no decode — a floor, not a budget.\n\n",
+         `EP` is the execution provider each session actually got. No preprocessing, \
+         no decode — a floor, not a budget.\n\n",
         cfg.runtime.warmup_iters
     ));
     out.push_str("| model | MB | input | EP | load ms | p50 ms | p95 ms | max ms |\n");
@@ -1036,8 +1037,8 @@ fn cmd_inspect(paths: &[PathBuf]) -> Result<()> {
 
         if info.has_dynamic_axes() {
             println!(
-                "  note: dynamic axes present — DirectML wants fully static shapes at \
-                 session creation (step 5)"
+                "  note: dynamic axes present — the GPU providers want fully static \
+                 shapes at session creation (step 5)"
             );
         }
     }

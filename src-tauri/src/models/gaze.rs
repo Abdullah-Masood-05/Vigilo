@@ -78,7 +78,7 @@ impl GazeNet {
     /// Which execution provider this session is actually running on.
     ///
     /// Read from the session that was built, not from what config asked
-    /// for — those differ whenever DirectML registration failed and the
+    /// for — those differ whenever GPU provider registration failed and the
     /// CPU fallback took over.
     pub fn ep(&self) -> ActiveEp {
         self.ep

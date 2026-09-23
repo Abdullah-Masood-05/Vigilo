@@ -393,9 +393,11 @@ function drawHud(snap) {
 // when an EP fails to register, and a GPU that never engaged looks exactly
 // like a GPU that did not help. Reading this off the HUD is the only honest
 // way to know; a latency number cannot tell you.
+const EP_SHORT = { DirectML: "dml", CUDA: "cuda", CoreML: "coreml", CPU: "cpu" };
+
 function epLine(eps) {
   if (!eps || !eps.length) return "";
-  const parts = eps.map(([slot, ep]) => `${slot}:${ep === "DirectML" ? "dml" : "cpu"}`);
+  const parts = eps.map(([slot, ep]) => `${slot}:${EP_SHORT[ep] ?? ep.toLowerCase()}`);
   return `ep      ${parts.join("  ")}`;
 }
 

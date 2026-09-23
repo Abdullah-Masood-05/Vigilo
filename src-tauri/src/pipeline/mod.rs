@@ -100,7 +100,7 @@ pub(crate) struct Shared {
     enrol_request: AtomicBool,
 
     /// Which execution provider each model session actually got, recorded at
-    /// load. Hard-coding "CPU" here is how a silent DirectML fallback stays
+    /// load. Hard-coding "CPU" here is how a silent GPU fallback stays
     /// invisible, which is the failure this whole field exists to catch.
     eps: Mutex<BTreeMap<String, String>>,
 
@@ -646,7 +646,7 @@ impl Detector {
         for slot in ["pose", "gaze", "identity"] {
             // Present and explicitly inactive, rather than absent. An absent
             // key would read as "not applicable". The EP is still recorded —
-            // a slot that loaded on DirectML and then produced nothing is a
+            // a slot that loaded on the GPU and then produced nothing is a
             // different problem from one that never loaded.
             signals.insert(
                 slot.to_string(),
