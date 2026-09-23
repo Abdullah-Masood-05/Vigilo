@@ -52,7 +52,7 @@ If you have npm or pnpm instead, they work identically (`npm install`,
 |---|---|---|
 | **Rust 1.97+** | builds the app | [rustup.rs](https://rustup.rs) |
 | **Linker (Windows)** | fast linking with rust-lld | `rustup component add llvm-tools` or [MSVC Build Tools](https://visualstudio.microsoft.com/visual-cpp-build-tools/) |
-| ffmpeg | reads the webcam via DirectShow (committed to the repo, nothing to fetch) | see "ffmpeg" below |
+| ffmpeg | reads the webcam | one download, see "ffmpeg" below |
 | WebView2 | renders the UI | preinstalled on Windows 10/11 |
 | bun *(optional)* | installs the Tauri CLI | [bun.sh](https://bun.sh) |
 
@@ -83,10 +83,19 @@ DirectShow error code.
 
 ## ffmpeg
 
-`ffmpeg/ffmpeg.exe` is **committed** (via git-lfs) — a custom minimal build,
-camera capture only, ~1.7 MB, fully static (no companion DLLs). `git clone`
-gets you a working binary with nothing to fetch and no build toolchain to
-install. `cargo tauri build` bundles it as-is.
+ffmpeg is a custom minimal build — camera capture only, ~1.5–3 MB, fully
+static — built per OS in
+[ffmpeg-minimal-build](https://github.com/Abdullah-Masood-05/ffmpeg-minimal-build)
+and **not committed here**. CI downloads the right one for each installer. For
+a local checkout, put it in `ffmpeg/` before building; `cargo tauri build`
+bundles whatever is there:
+
+```bash
+base=https://github.com/Abdullah-Masood-05/ffmpeg-minimal-build/releases/download/v7.1.4-multiplatform
+curl -fL -o ffmpeg/ffmpeg.exe "$base/ffmpeg-windows-x86_64.exe"                     # Windows
+curl -fL -o ffmpeg/ffmpeg "$base/ffmpeg-macos-arm64" && chmod +x ffmpeg/ffmpeg     # macOS
+curl -fL -o ffmpeg/ffmpeg "$base/ffmpeg-linux-x86_64" && chmod +x ffmpeg/ffmpeg    # Linux
+```
 
 It configures `--disable-all` and enables exactly: `avdevice`/`dshow` (the
 camera), `avcodec` with the `mjpeg`/`rawvideo` decoders, `avformat` with the
@@ -104,10 +113,9 @@ not be. The licence text ships alongside the binary. Full detail, including the
 exact configure line and the equivalence measurements against a full LGPL build,
 is in `rust_context.md` §22.
 
-Rebuilding it needs MSYS2 with mingw-w64, nasm and pkg-config — a one-time
-cost on whoever's machine builds it, not a permanent project dependency, since
-the output is committed. For development you do not need any of this: `file:`
-and `dir:` replay sources use whatever `ffmpeg`/`ffprobe` are on `PATH`.
+Rebuilding it happens in that repository, not this one. For development you
+do not need it at all: `file:` and `dir:` replay sources use whatever
+`ffmpeg`/`ffprobe` are on `PATH`.
 
 ## Models
 
