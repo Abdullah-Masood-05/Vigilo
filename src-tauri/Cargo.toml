@@ -123,3 +123,8 @@ gpu-coreml = ["ort/coreml"]
 [profile.release]
 strip = true
 lto = true
+# One codegen unit: the default 16 limits exactly the cross-unit inlining the
+# per-pixel preprocessing loops want. Slower release builds, faster frames.
+codegen-units = 1
+# Nothing in src/ uses catch_unwind, so unwinding buys nothing but size.
+panic = "abort"
