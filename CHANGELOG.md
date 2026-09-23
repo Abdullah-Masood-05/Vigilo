@@ -5,6 +5,20 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.0] - 2026-09-23
+
+### Changed
+- **Preprocessing**: all five models write their planar input tensors through one shared routine — three sequential plane streams per row, no bounds checks in the inner loop — and YuNet/YOLOX pad only the uncovered letterbox bands instead of clearing the whole tensor first.
+- **Capture**: frames are moved into the frame bus instead of copied (`Frame.data` is now `Arc<Vec<u8>>`), and capture buffers are recycled once every reader drops them.
+- **Worker loops**: the capture-done check reads the frame sequence number through a guard load rather than cloning the frame `Arc` every iteration.
+- **Release profile**: `codegen-units = 1` and `panic = "abort"`.
+- **Installers**: x86_64 builds target `x86-64-v3` (AVX2 required).
+- **ffmpeg**: no longer committed; CI downloads the per-OS build from `ffmpeg-minimal-build` (v7.1.4-multiplatform). macOS and Linux installers now ship their own ffmpeg instead of the Windows binary.
+
+### CI
+- Rust build cache (including the ONNX Runtime download cache) and a model-weights cache on every job.
+- Test job runs clippy and tests in the dev profile instead of two fat-LTO release builds.
+
 ## [1.0.0] - 2026-09-04
 
 ### Added
