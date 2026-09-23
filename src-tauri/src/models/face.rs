@@ -35,7 +35,7 @@ use crate::config::{Config, ModelSlot};
 use crate::error::{DetectError, Result};
 use crate::types::{BBox, FaceDetection, FaceKeypoints, Frame};
 
-use super::{build_session_for, ActiveEp, inference_error, nchw_input, StageTimings};
+use super::{build_session_for, ActiveEp, inference_error, nchw_input, write_planar, StageTimings};
 
 /// The model's fixed input side. Not configurable — it is baked into the file.
 pub const INPUT_SIZE: u32 = 640;
@@ -213,30 +213,17 @@ impl YuNet {
             )
             .map_err(|e| DetectError::Config(format!("resize: {e}")))?;
 
-        // Explicit tight loop over a preallocated buffer — not chained
-        // iterator `collect()`s (MODELS.md §6 rule 4).
-        self.tensor.fill(0.0);
-        let side = INPUT_SIZE as usize;
-        let plane = side * side;
-        let scaled = self.scaled.buffer();
-        for y in 0..new_h as usize {
-            let src_row = y * new_w as usize * 3;
-            let dst_row = y * side;
-            for x in 0..new_w as usize {
-                let s = src_row + x * 3;
-                let d = dst_row + x;
-                let (r, g, b) = (scaled[s] as f32, scaled[s + 1] as f32, scaled[s + 2] as f32);
-                if CHANNEL_ORDER_BGR {
-                    self.tensor[d] = b;
-                    self.tensor[plane + d] = g;
-                    self.tensor[2 * plane + d] = r;
-                } else {
-                    self.tensor[d] = r;
-                    self.tensor[plane + d] = g;
-                    self.tensor[2 * plane + d] = b;
-                }
-            }
-        }
+        // Straight into the preallocated tensor, black letterbox bands only
+        // where the image does not reach (MODELS.md §6 rule 4).
+        write_planar::<CHANNEL_ORDER_BGR>(
+            &mut self.tensor,
+            INPUT_SIZE as usize,
+            self.scaled.buffer(),
+            new_w as usize,
+            new_h as usize,
+            0.0,
+            |_, v| v,
+        );
 
         Ok(())
     }

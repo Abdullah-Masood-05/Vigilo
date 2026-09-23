@@ -38,7 +38,7 @@ use crate::config::{Config, ModelSlot};
 use crate::error::{DetectError, Result};
 use crate::types::{BBox, FaceDetection, Frame, HeadPose};
 
-use super::{build_session_for, ActiveEp, inference_error, nchw_input, StageTimings};
+use super::{build_session_for, ActiveEp, inference_error, nchw_input, write_planar, StageTimings};
 
 /// Fixed by the exported graph.
 pub const INPUT_SIZE: u32 = 224;
@@ -176,14 +176,9 @@ impl HeadPoseNet {
             .map_err(|e| DetectError::Config(format!("pose crop/resize: {e}")))?;
 
         let side = INPUT_SIZE as usize;
-        let plane = side * side;
-        let px = self.scaled.buffer();
-        for i in 0..plane {
-            let s = i * 3;
-            for c in 0..3 {
-                self.tensor[c * plane + i] = ((px[s + c] as f32 / 255.0) - MEAN[c]) / STD[c];
-            }
-        }
+        write_planar::<false>(&mut self.tensor, side, self.scaled.buffer(), side, side, 0.0, |c, v| {
+            ((v / 255.0) - MEAN[c]) / STD[c]
+        });
         Ok(())
     }
 }

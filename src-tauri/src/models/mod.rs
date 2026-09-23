@@ -479,6 +479,62 @@ pub(crate) fn nms<T>(
     kept
 }
 
+/// Write a packed RGB8 image into the top-left of a planar `[3, side, side]`
+/// tensor, and pad only what the image leaves uncovered.
+///
+/// Shared by all five models. The tensor is split into its three planes and
+/// each source row is zipped against the three destination rows, so every
+/// plane is written as one sequential stream with no bounds checks in the
+/// inner loop — which is what lets the u8 -> f32 convert vectorise. Filling
+/// the whole tensor first and then overwriting most of it cost a full extra
+/// pass (4.9 MB per YuNet frame); only the right and bottom bands need it.
+///
+/// `norm(c, v)` maps source channel `c` (0 = R) to the tensor value. `BGR`
+/// puts source channel 2 in plane 0.
+#[inline]
+pub(crate) fn write_planar<const BGR: bool>(
+    tensor: &mut [f32],
+    side: usize,
+    rgb: &[u8],
+    width: usize,
+    height: usize,
+    pad: f32,
+    norm: impl Fn(usize, f32) -> f32,
+) {
+    let plane = side * side;
+    let (p0, rest) = tensor[..3 * plane].split_at_mut(plane);
+    let (p1, p2) = rest.split_at_mut(plane);
+    let (c0, c2) = if BGR { (2, 0) } else { (0, 2) };
+
+    let mut rows_written = 0;
+    if width > 0 {
+        let src_rows = rgb.chunks_exact(width * 3).take(height.min(side));
+        let dst_rows = p0
+            .chunks_exact_mut(side)
+            .zip(p1.chunks_exact_mut(side))
+            .zip(p2.chunks_exact_mut(side));
+        for (src, ((d0, d1), d2)) in src_rows.zip(dst_rows) {
+            let (d0, pad0) = d0.split_at_mut(width);
+            let (d1, pad1) = d1.split_at_mut(width);
+            let (d2, pad2) = d2.split_at_mut(width);
+            for (((px, a), b), c) in src.as_chunks::<3>().0.iter().zip(d0).zip(d1).zip(d2) {
+                *a = norm(c0, px[c0] as f32);
+                *b = norm(1, px[1] as f32);
+                *c = norm(c2, px[c2] as f32);
+            }
+            pad0.fill(pad);
+            pad1.fill(pad);
+            pad2.fill(pad);
+            rows_written += 1;
+        }
+    }
+
+    let covered = rows_written * side;
+    p0[covered..].fill(pad);
+    p1[covered..].fill(pad);
+    p2[covered..].fill(pad);
+}
+
 pub(crate) fn inference_error(model: &'static str, e: ort::Error) -> DetectError {
     DetectError::Inference { model, source: Box::new(e) }
 }
@@ -536,6 +592,22 @@ mod tests {
                 ActiveEp::Cpu => panic!("CPU is the fallback, not a GPU provider"),
             }
         }
+    }
+
+    #[test]
+    fn planar_write_swaps_channels_and_pads_only_the_uncovered_bands() {
+        // 2x1 image into a 3x3 tensor: pixel (0,0) = (1,2,3), (1,0) = (4,5,6).
+        let rgb = [1u8, 2, 3, 4, 5, 6];
+        let mut t = vec![-1.0f32; 27];
+        write_planar::<true>(&mut t, 3, &rgb, 2, 1, 9.0, |_, v| v);
+        // Plane 0 is B, plane 2 is R; everything not covered is the pad.
+        assert_eq!(&t[0..9], &[3.0, 6.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0]);
+        assert_eq!(&t[9..18], &[2.0, 5.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0]);
+        assert_eq!(&t[18..27], &[1.0, 4.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0, 9.0]);
+
+        write_planar::<false>(&mut t, 3, &rgb, 2, 1, 0.0, |c, v| v * 10.0 + c as f32);
+        assert_eq!(&t[0..2], &[10.0, 40.0]);
+        assert_eq!(&t[18..20], &[32.0, 62.0]);
     }
 
     #[test]
