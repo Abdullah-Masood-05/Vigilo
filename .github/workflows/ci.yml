@@ -246,14 +246,14 @@ jobs:
       - name: Publish GPU Release
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: v1.0.0-gpu
-          name: "Vigilo v1.0.0 (GPU build)"
+          tag_name: v1.1.0-gpu
+          name: "Vigilo v1.1.0 (GPU build)"
           prerelease: true
           files: |
             downloaded-installers/*
           generate_release_notes: false
           body: |
-            GPU-accelerated pre-release build of Vigilo v1.0.0. Every model runs on the platform's GPU execution provider for ONNX Runtime, falling back to CPU per model if that provider cannot start.
+            GPU-accelerated pre-release build of Vigilo v1.1.0. Every model runs on the platform's GPU execution provider for ONNX Runtime, falling back to CPU per model if that provider cannot start.
 
             ### GPU per platform
             - **Windows — DirectML**: any DirectX 12 GPU, integrated or discrete. Measured on Intel integrated graphics: face/pose/gaze pipeline ~27 ms → ~5.8 ms p50.
