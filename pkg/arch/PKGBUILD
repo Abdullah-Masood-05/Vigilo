@@ -33,6 +33,16 @@ package() {
         ln -sf /usr/share/vigilo/ffmpeg "$pkgdir/usr/lib/vigilo/ffmpeg"
     fi
 
+    # ONNX Runtime's CUDA provider (gpu-cuda builds only). ORT looks for these
+    # beside the executable, so they go in /usr/bin next to it. Without the
+    # CUDA 12 runtime and cuDNN 9 on the machine they fail to load and every
+    # model falls back to CPU.
+    for lib in "$srcdir"/libonnxruntime_providers_*.so; do
+        if [ -f "$lib" ]; then
+            install -Dm755 "$lib" "$pkgdir/usr/bin/$(basename "$lib")"
+        fi
+    done
+
     # Desktop entry
     install -Dm644 "$srcdir/vigilo.desktop" "$pkgdir/usr/share/applications/vigilo.desktop"
 

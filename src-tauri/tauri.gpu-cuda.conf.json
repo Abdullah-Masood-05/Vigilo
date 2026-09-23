@@ -1,0 +1,19 @@
+{
+  "$schema": "https://schema.tauri.app/config/2",
+  "bundle": {
+    "linux": {
+      "deb": {
+        "files": {
+          "/usr/bin/libonnxruntime_providers_shared.so": "target/release/libonnxruntime_providers_shared.so",
+          "/usr/bin/libonnxruntime_providers_cuda.so": "target/release/libonnxruntime_providers_cuda.so"
+        }
+      },
+      "rpm": {
+        "files": {
+          "/usr/bin/libonnxruntime_providers_shared.so": "target/release/libonnxruntime_providers_shared.so",
+          "/usr/bin/libonnxruntime_providers_cuda.so": "target/release/libonnxruntime_providers_cuda.so"
+        }
+      }
+    }
+  }
+}

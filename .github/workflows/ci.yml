@@ -1,4 +1,4 @@
-name: CI / CD (GPU DirectML)
+name: CI / CD (GPU)
 
 on:
   push:
@@ -45,8 +45,8 @@ jobs:
       - name: Run clippy and tests
         run: |
           cd src-tauri
-          cargo clippy --all-targets --release
-          cargo test --release
+          cargo clippy --all-targets --release --features gpu-cuda
+          cargo test --release --features gpu-cuda
 
   build:
     name: Build Installers
@@ -55,7 +55,16 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        platform: [windows-latest, macos-latest, ubuntu-latest]
+        # One GPU execution provider per OS (see `[features]` in Cargo.toml).
+        # Linux also merges tauri.gpu-cuda.conf.json, which puts ORT's CUDA
+        # provider libraries beside the binary in the .deb and .rpm.
+        include:
+          - platform: windows-latest
+            tauri-args: --features gpu-directml
+          - platform: macos-latest
+            tauri-args: --features gpu-coreml
+          - platform: ubuntu-latest
+            tauri-args: --features gpu-cuda --config src-tauri/tauri.gpu-cuda.conf.json
 
     steps:
       - name: Checkout repository
@@ -94,7 +103,17 @@ jobs:
         run: bun install
 
       - name: Build Tauri
-        run: bun run tauri build
+        run: bun run tauri build ${{ matrix.tauri-args }}
+
+      # copy-dylibs leaves symlinks into the host's ORT cache, which the Arch
+      # container below cannot see. Resolve them into the workspace first.
+      - name: Collect CUDA provider libraries (Linux)
+        if: runner.os == 'Linux'
+        run: |
+          mkdir -p ort-providers
+          cp -L src-tauri/target/release/libonnxruntime_providers_shared.so \
+                src-tauri/target/release/libonnxruntime_providers_cuda.so ort-providers/
+          ls -la ort-providers/
 
       - name: Build Arch Linux package (.pkg.tar.zst)
         if: runner.os == 'Linux'
@@ -110,6 +129,7 @@ jobs:
               cp /workspace/src-tauri/target/release/vigilo /tmp/archpkg/src/vigilo
               cp -r /workspace/models /tmp/archpkg/src/
               cp -r /workspace/ffmpeg /tmp/archpkg/src/ 2>/dev/null || true
+              cp /workspace/ort-providers/*.so /tmp/archpkg/src/
               cp /workspace/src-tauri/icons/icon.png /tmp/archpkg/src/icon.png
               cat << 'EOF' > /tmp/archpkg/src/vigilo.desktop
           [Desktop Entry]
@@ -172,30 +192,28 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           tag_name: v1.0.0-gpu
-          name: "Vigilo v1.0.0 (GPU DirectML build)"
+          name: "Vigilo v1.0.0 (GPU build)"
           prerelease: true
           files: |
             downloaded-installers/*
           generate_release_notes: false
           body: |
-            GPU-accelerated pre-release build of Vigilo v1.0.0 using DirectML for ONNX Runtime model inference.
+            GPU-accelerated pre-release build of Vigilo v1.0.0. Every model runs on the platform's GPU execution provider for ONNX Runtime, falling back to CPU per model if that provider cannot start.
 
-            ### Overview
-            This build moves inference workloads to any DirectX 12 compatible GPU via DirectML, reducing face/pose/gaze pipeline latency from ~27 ms down to ~5.8 ms p50, while incorporating Vigilo v1.0.0's dynamic threshold configuration, in-app settings drawer, formalized severity tiers, and zero-overhead hot-reloading.
+            ### GPU per platform
+            - **Windows — DirectML**: any DirectX 12 GPU, integrated or discrete. Measured on Intel integrated graphics: face/pose/gaze pipeline ~27 ms → ~5.8 ms p50.
+            - **macOS (Apple Silicon) — CoreML**: nothing extra to install.
+            - **Linux — CUDA**: NVIDIA GPUs. Requires the NVIDIA driver, the CUDA 12 runtime and cuDNN 9 on the machine; without them the app runs on CPU. The `.deb`, `.rpm` and Arch packages ship ONNX Runtime's CUDA provider; the `.AppImage` is CPU-only.
 
-            ### What's New in v1.0.0-gpu
-            - **DirectML GPU Acceleration**: Native hardware acceleration on DirectX 12 GPUs for ultra-low latency inference (~5.8 ms p50).
+            The HUD's `ep` line shows which provider each model actually got.
+
+            ### Also in v1.0.0
             - **Dynamic Threshold Configuration**: Adjust hold timers, angles, and score thresholds in real time without restarting.
-            - **Modern Glassmorphic Settings Drawer**: In-app controls for Presence, Head Pose, Gaze Tracking, Prohibited Objects, Severities, and internal Developer Options.
+            - **Settings Drawer**: In-app controls for Presence, Head Pose, Gaze Tracking, Prohibited Objects, Severities, and internal Developer Options.
             - **Interactive In-App Guide**: Built-in reference explaining all violation rules and severity tiers (Low, Medium, High, Critical).
             - **Persistent Storage**: Configuration auto-persists to `settings.toml` in OS app data with factory reset support.
 
-            ### Installers and DirectML bundling
-            - **Windows MSI installer (`.msi`)**: Recommended. Bundles `DirectML.dll` automatically.
-            - **Windows NSIS installer (`.exe`)**: Functional, but falls back to CPU execution if DirectML is not already present in the Windows system environment.
-            - **macOS / Linux**: Provided with CPU fallback execution.
-
             ### Setup
-            1. Download and run the installer (MSI recommended on Windows).
+            1. Download and run the installer for your platform (MSI recommended on Windows; it bundles `DirectML.dll`).
             2. If Windows SmartScreen appears, click "More info" followed by "Run anyway".
             3. Position yourself facing the webcam and click "Enrol face" before starting the session.
