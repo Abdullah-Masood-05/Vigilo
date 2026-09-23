@@ -39,7 +39,7 @@ use crate::config::Config;
 use crate::error::{DetectError, Result};
 use crate::types::{FaceDetection, Frame};
 
-use super::{build_session, inference_error, StageTimings};
+use super::{build_session, inference_error, write_planar, StageTimings};
 
 /// Fixed by the exported graph.
 pub const INPUT_SIZE: u32 = 112;
@@ -162,14 +162,9 @@ impl ArcFace {
             .map_err(|e| DetectError::Config(format!("arcface crop/resize: {e}")))?;
 
         let side = INPUT_SIZE as usize;
-        let plane = side * side;
-        let pixels = self.scaled.buffer();
-        for i in 0..plane {
-            let px = &pixels[i * 3..i * 3 + 3];
-            self.tensor[i] = (px[0] as f32 / 127.5) - 1.0;
-            self.tensor[plane + i] = (px[1] as f32 / 127.5) - 1.0;
-            self.tensor[2 * plane + i] = (px[2] as f32 / 127.5) - 1.0;
-        }
+        write_planar::<false>(&mut self.tensor, side, self.scaled.buffer(), side, side, 0.0, |_, v| {
+            (v / 127.5) - 1.0
+        });
         Ok(())
     }
 }

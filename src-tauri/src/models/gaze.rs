@@ -38,7 +38,7 @@ use crate::config::Config;
 use crate::error::{DetectError, Result};
 use crate::types::{FaceDetection, Frame, GateReason, Gaze, HeadPose};
 
-use super::{build_session, inference_error, nchw_input, StageTimings};
+use super::{build_session, inference_error, nchw_input, write_planar, StageTimings};
 
 pub const INPUT_SIZE: u32 = 448;
 
@@ -175,14 +175,10 @@ impl GazeNet {
             )
             .map_err(|e| DetectError::Config(format!("gaze crop/resize: {e}")))?;
 
-        let plane = (INPUT_SIZE * INPUT_SIZE) as usize;
-        let px = self.scaled.buffer();
-        for i in 0..plane {
-            let s = i * 3;
-            for c in 0..3 {
-                self.tensor[c * plane + i] = ((px[s + c] as f32 / 255.0) - MEAN[c]) / STD[c];
-            }
-        }
+        let side = INPUT_SIZE as usize;
+        write_planar::<false>(&mut self.tensor, side, self.scaled.buffer(), side, side, 0.0, |c, v| {
+            ((v / 255.0) - MEAN[c]) / STD[c]
+        });
         Ok(())
     }
 }

@@ -46,7 +46,7 @@ use crate::config::Config;
 use crate::error::{DetectError, Result};
 use crate::types::{BBox, Frame, ObjectDetection};
 
-use super::{build_session, inference_error, nchw_input, StageTimings};
+use super::{build_session, inference_error, nchw_input, write_planar, StageTimings};
 
 pub const INPUT_SIZE: u32 = 416;
 
@@ -196,31 +196,18 @@ impl YoloxNano {
             )
             .map_err(|e| DetectError::Config(format!("object resize: {e}")))?;
 
-        // Fill with the pad value first, then write the scaled image into the
-        // top-left corner. Padding with black instead would put a hard edge
-        // where the model expects neutral grey.
-        self.tensor.fill(PAD_VALUE as f32);
-        let side = INPUT_SIZE as usize;
-        let plane = side * side;
-        let px = self.scaled.buffer();
-        for y in 0..new_h as usize {
-            let src_row = y * new_w as usize * 3;
-            let dst_row = y * side;
-            for x in 0..new_w as usize {
-                let s = src_row + x * 3;
-                let d = dst_row + x;
-                let (r, g, b) = (px[s] as f32, px[s + 1] as f32, px[s + 2] as f32);
-                if CHANNEL_ORDER_BGR {
-                    self.tensor[d] = b;
-                    self.tensor[plane + d] = g;
-                    self.tensor[2 * plane + d] = r;
-                } else {
-                    self.tensor[d] = r;
-                    self.tensor[plane + d] = g;
-                    self.tensor[2 * plane + d] = b;
-                }
-            }
-        }
+        // Scaled image in the top-left corner, pad value everywhere else.
+        // Padding with black instead would put a hard edge where the model
+        // expects neutral grey.
+        write_planar::<CHANNEL_ORDER_BGR>(
+            &mut self.tensor,
+            INPUT_SIZE as usize,
+            self.scaled.buffer(),
+            new_w as usize,
+            new_h as usize,
+            PAD_VALUE as f32,
+            |_, v| v,
+        );
         Ok(())
     }
 }
@@ -251,7 +238,7 @@ fn decode(
     letterbox_scale: f32,
     allowed: &[u32],
 ) -> Vec<ObjectDetection> {
-    let mut out = Vec::new();
+    let mut out = Vec::with_capacity(16);
     let inv_scale = if letterbox_scale > 0.0 { 1.0 / letterbox_scale } else { 1.0 };
 
     let mut offset = 0usize;
