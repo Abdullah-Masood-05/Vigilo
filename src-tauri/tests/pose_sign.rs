@@ -44,7 +44,7 @@ fn load_fixture() -> Option<Frame> {
     let img = image::open(path).ok()?.into_rgb8();
     let (w, h) = (img.width(), img.height());
     Some(Frame {
-        data: Arc::from(img.into_raw().as_slice()),
+        data: Arc::new(img.into_raw()),
         width: w,
         height: h,
         seq: 1,
@@ -65,7 +65,7 @@ fn mirror(frame: &Frame) -> Frame {
         }
     }
     Frame {
-        data: Arc::from(out.as_slice()),
+        data: Arc::new(out),
         width: frame.width,
         height: frame.height,
         seq: frame.seq,

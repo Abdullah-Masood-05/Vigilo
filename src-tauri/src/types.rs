@@ -13,7 +13,9 @@ use serde::{Deserialize, Serialize};
 /// Raw camera frame. RGB8, tightly packed. Shared, never copied.
 #[derive(Clone)]
 pub struct Frame {
-    pub data: Arc<[u8]>,
+    /// `Arc<Vec<u8>>` rather than `Arc<[u8]>` so the capture buffer can be
+    /// moved in, not copied, and recycled once every reader drops it.
+    pub data: Arc<Vec<u8>>,
     pub width: u32,
     pub height: u32,
     pub seq: u64,
@@ -25,7 +27,7 @@ impl Frame {
     /// data; workers skip it because it never matches a new sequence number.
     pub fn empty() -> Self {
         Self {
-            data: Arc::from(Vec::new()),
+            data: Arc::new(Vec::new()),
             width: 0,
             height: 0,
             seq: 0,

@@ -9,8 +9,10 @@
 //! is slower than capture — which it always is. That is the design, not a
 //! failure, and the drop count is exposed so saturation stays visible.
 //!
-//! `Arc<[u8]>` inside `Frame` means the capture thread decodes once and every
-//! reader shares those bytes with zero copies.
+//! `Arc<Vec<u8>>` inside `Frame` means the capture thread decodes once and
+//! every reader shares those bytes with zero copies — including the hand-off
+//! from the capture pipe itself, which moves its buffer in rather than
+//! copying it.
 
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
@@ -43,6 +45,13 @@ impl FrameBus {
     /// Whatever is in the slot right now, new or not.
     pub fn latest(&self) -> Arc<Frame> {
         self.slot.load_full()
+    }
+
+    /// Sequence number of the frame in the slot. A guard `load()`, not
+    /// `load_full()`: no refcount bump and no `Arc` clone for a caller that
+    /// only wants one integer, every loop iteration.
+    pub fn latest_seq(&self) -> u64 {
+        self.slot.load().seq
     }
 
     /// The current frame, but only if it is newer than what this reader last
@@ -81,7 +90,7 @@ mod tests {
 
     fn frame(seq: u64) -> Frame {
         Frame {
-            data: Arc::from(vec![0u8; 4 * 2 * 3].as_slice()),
+            data: Arc::new(vec![0u8; 4 * 2 * 3]),
             width: 4,
             height: 2,
             seq,

@@ -38,6 +38,10 @@ impl Pacer {
     }
 }
 
+/// Frame buffers kept for reuse. The bus holds one frame and each worker at
+/// most one more while it runs, so a handful covers steady state.
+const RECYCLE_POOL: usize = 6;
+
 /// A running ffmpeg process emitting tightly packed rgb24 frames of a known
 /// size. Owns the child and kills it on drop.
 pub(crate) struct RawRgbPipe {
@@ -52,6 +56,10 @@ pub(crate) struct RawRgbPipe {
     /// ffmpeg's message is the whole diagnosis.
     stderr_drain: Option<std::thread::JoinHandle<()>>,
     buf: Vec<u8>,
+    /// Buffers of frames already handed out. The next frame reuses one as
+    /// soon as every reader has dropped it, so steady state is neither a copy
+    /// nor a fresh multi-megabyte allocation per frame.
+    handed_out: Vec<Arc<Vec<u8>>>,
     seq: u64,
     done: bool,
     /// A file ending is normal; a camera ending is a fault.
@@ -104,6 +112,7 @@ impl RawRgbPipe {
             stderr,
             stderr_drain,
             buf: vec![0u8; width as usize * height as usize * 3],
+            handed_out: Vec::with_capacity(RECYCLE_POOL),
             seq: 0,
             done: false,
             eof_is_error,
@@ -178,8 +187,17 @@ impl RawRgbPipe {
             return Ok(None);
         }
 
+        // Move the filled buffer into the frame — no copy — and line up the
+        // next one before returning.
+        let data = Arc::new(std::mem::take(&mut self.buf));
+        self.buf = self.spare_buffer(data.len());
+        if self.handed_out.len() >= RECYCLE_POOL {
+            self.handed_out.remove(0);
+        }
+        self.handed_out.push(Arc::clone(&data));
+
         let frame = Frame {
-            data: Arc::from(self.buf.as_slice()),
+            data,
             width: self.width,
             height: self.height,
             seq: self.seq,
@@ -187,6 +205,21 @@ impl RawRgbPipe {
         };
         self.seq += 1;
         Ok(Some(frame))
+    }
+}
+
+impl RawRgbPipe {
+    /// A buffer for the next frame: one no reader holds any more, or a fresh
+    /// one if every recent frame is still in use somewhere.
+    fn spare_buffer(&mut self, len: usize) -> Vec<u8> {
+        if let Some(i) = self.handed_out.iter().position(|b| Arc::strong_count(b) == 1) {
+            if let Ok(buf) = Arc::try_unwrap(self.handed_out.swap_remove(i)) {
+                if buf.len() == len {
+                    return buf;
+                }
+            }
+        }
+        vec![0u8; len]
     }
 }
 

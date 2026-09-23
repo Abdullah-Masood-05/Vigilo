@@ -111,7 +111,7 @@ pub(super) fn detect_loop(
             break;
         }
         // Capture finished and there is nothing new left to process.
-        if shared.capture_done.load(Ordering::Relaxed) && shared.bus.latest().seq <= last_seen {
+        if shared.capture_done.load(Ordering::Relaxed) && shared.bus.latest_seq() <= last_seen {
             break;
         }
 
@@ -352,7 +352,7 @@ pub(super) fn object_loop(mut model: YoloxNano, cfg: Config, shared: Arc<Shared>
         if shared.stop.load(Ordering::Relaxed) {
             break;
         }
-        if shared.capture_done.load(Ordering::Relaxed) && shared.bus.latest().seq <= last_seen {
+        if shared.capture_done.load(Ordering::Relaxed) && shared.bus.latest_seq() <= last_seen {
             break;
         }
 
@@ -397,7 +397,7 @@ pub(super) fn identity_loop(mut model: ArcFace, cfg: Config, shared: Arc<Shared>
         if shared.stop.load(Ordering::Relaxed) {
             break;
         }
-        if shared.capture_done.load(Ordering::Relaxed) && shared.bus.latest().seq <= last_seen {
+        if shared.capture_done.load(Ordering::Relaxed) && shared.bus.latest_seq() <= last_seen {
             break;
         }
 
