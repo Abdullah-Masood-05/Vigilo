@@ -584,13 +584,14 @@ mod tests {
         // Registering DirectML on Linux was a SIGSEGV, not an error, so the
         // feature gate is the only thing standing between a mis-built binary
         // and a crash at model load.
+        let exists_here = |ep: ActiveEp| match ep {
+            ActiveEp::DirectMl => cfg!(windows),
+            ActiveEp::CoreMl => cfg!(target_os = "macos"),
+            ActiveEp::Cuda => cfg!(any(target_os = "linux", windows)),
+            ActiveEp::Cpu => false,
+        };
         for ep in gpu_eps() {
-            match ep {
-                ActiveEp::DirectMl => assert!(cfg!(windows)),
-                ActiveEp::CoreMl => assert!(cfg!(target_os = "macos")),
-                ActiveEp::Cuda => assert!(cfg!(any(target_os = "linux", windows))),
-                ActiveEp::Cpu => panic!("CPU is the fallback, not a GPU provider"),
-            }
+            assert!(exists_here(ep), "{ep:?} offered on an OS that does not have it");
         }
     }
 
