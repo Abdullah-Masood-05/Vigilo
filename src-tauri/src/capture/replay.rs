@@ -250,7 +250,7 @@ impl FrameSource for ImageDirSource {
         let rgb = img.into_rgb8();
         self.pacer.wait_for(self.seq);
         let frame = Frame {
-            data: Arc::from(rgb.into_raw().as_slice()),
+            data: Arc::new(rgb.into_raw()),
             width: self.width,
             height: self.height,
             seq: self.seq,
