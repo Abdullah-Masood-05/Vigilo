@@ -294,6 +294,33 @@ cargo run --release --features cli --bin detect-cli -- replay s.jsonl
 `replay` is the tuning loop: it runs fusion over a recording with **zero
 inference**, so changing a threshold is a TOML edit and an 87 ms re-run.
 
+### GPU acceleration
+
+A plain build runs every model on the CPU. GPU inference is a Cargo feature,
+one per platform:
+
+| Feature | Platform | Runs on | Needs on the machine |
+|---|---|---|---|
+| `gpu-directml` | Windows | any DirectX 12 GPU | nothing — `DirectML.dll` ships beside the exe |
+| `gpu-coreml` | macOS (Apple Silicon) | GPU / Neural Engine | nothing |
+| `gpu-cuda` | Linux (also Windows) | NVIDIA GPUs | NVIDIA driver, CUDA 12 runtime, cuDNN 9 |
+
+```bash
+bun run tauri dev --features gpu-directml
+bun run tauri build --features gpu-coreml
+cargo run --release --features cli,gpu-cuda --bin detect-cli -- bench --all
+```
+
+CI builds each installer with its platform's feature. Linux `.deb`, `.rpm` and
+Arch packages ship ONNX Runtime's CUDA provider libraries in `/usr/bin` beside
+the binary (merged in from `src-tauri/tauri.gpu-cuda.conf.json`); the AppImage
+is CPU-only.
+
+Each model tries the GPU and falls back to CPU on its own if the provider will
+not start, with a warning in the log. What each model actually got is on the
+HUD's `ep` line and in the bench table's `EP` column. `bench-cpu.toml` forces
+everything onto the CPU for comparison.
+
 `inspect` earns its keep — it reported that YuNet's released ONNX takes 640×640
 and not the 320×320 its docs imply, that the head-pose model returns a 3×3
 rotation matrix rather than Euler angles, and that MobileGaze emits two 90-bin
