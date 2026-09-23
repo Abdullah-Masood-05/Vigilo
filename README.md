@@ -56,6 +56,11 @@ If you have npm or pnpm instead, they work identically (`npm install`,
 | WebView2 | renders the UI | preinstalled on Windows 10/11 |
 | bun *(optional)* | installs the Tauri CLI | [bun.sh](https://bun.sh) |
 
+**Running the installers** needs, on x86_64, a CPU with AVX2 (`x86-64-v3`:
+Intel Haswell / AMD Zen or newer). CI builds with `-C target-cpu=x86-64-v3`
+because the preprocessing loops vectorise with it; a local `cargo build` has no
+such floor. Apple Silicon builds are unaffected.
+
 ### Windows Linker Setup
 
 The project uses `rust-lld` for faster build link times. Windows users can choose either option:
