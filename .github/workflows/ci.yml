@@ -7,6 +7,11 @@ on:
     branches: [main]
   workflow_dispatch:
 
+env:
+  # Minimal static ffmpeg, one binary per OS, built in
+  # Abdullah-Masood-05/ffmpeg-minimal-build and fetched at build time.
+  FFMPEG_RELEASE: v7.1.4-multiplatform
+
 jobs:
   test:
     name: Test & Lint
@@ -15,8 +20,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          lfs: true
 
       - name: Install system dependencies (Linux)
         run: |
@@ -83,8 +86,6 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
-        with:
-          lfs: true
 
       - name: Install system dependencies (Linux)
         if: runner.os == 'Linux'
@@ -131,6 +132,18 @@ jobs:
           curl -sSL -o buffalo_sc.zip https://github.com/deepinsight/insightface/releases/download/v0.7/buffalo_sc.zip
           unzip -j buffalo_sc.zip w600k_mbf.onnx -d models
           rm -f buffalo_sc.zip
+
+      - name: Download ffmpeg
+        shell: bash
+        run: |
+          base="https://github.com/Abdullah-Masood-05/ffmpeg-minimal-build/releases/download/${FFMPEG_RELEASE}"
+          mkdir -p ffmpeg
+          case "$RUNNER_OS" in
+            Windows) curl -fsSL -o ffmpeg/ffmpeg.exe "$base/ffmpeg-windows-x86_64.exe" ;;
+            macOS)   curl -fsSL -o ffmpeg/ffmpeg "$base/ffmpeg-macos-arm64" && chmod +x ffmpeg/ffmpeg ;;
+            Linux)   curl -fsSL -o ffmpeg/ffmpeg "$base/ffmpeg-linux-x86_64" && chmod +x ffmpeg/ffmpeg ;;
+          esac
+          ls -la ffmpeg
 
       - name: Install dependencies
         run: bun install
